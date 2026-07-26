@@ -32,15 +32,18 @@ if (!fs.existsSync(uploadDir)) {
 // Expose static files
 app.use('/uploads', express.static(uploadDir));
 
-// Email Transporter Configuration
+// Email Transporter Configuration (Explicit host/port to prevent ETIMEDOUT on Render)
 const transporter = nodemailer.createTransport({
-    service: 'gmail',
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: Number(process.env.SMTP_PORT) || 465,
+    secure: true, // true for port 465, false for port 587
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
-    }
+    },
+    connectionTimeout: 10000, // 10 seconds timeout
+    socketTimeout: 10000
 });
-
 // --- MULTER STORAGE SETUP ---
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
