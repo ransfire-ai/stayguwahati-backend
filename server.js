@@ -8,7 +8,10 @@ const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
+
+// Initialize Resend (replaces Nodemailer to bypass Render SMTP blocks)
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Models
 const Homestay = require('./models/Homestay');
@@ -52,19 +55,6 @@ if (!fs.existsSync(uploadDir)) {
 // Expose static files
 app.use('/uploads', express.static(uploadDir));
 
-// Email Transporter Configuration (Explicit host/port & timeout to prevent ETIMEDOUT on Render)
-const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || 'smtp.gmail.com',
-    port: Number(process.env.SMTP_PORT) || 465,
-    secure: true, // true for port 465, false for port 587
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-    },
-    connectionTimeout: 10000, // 10 seconds timeout
-    socketTimeout: 10000
-});
-
 // --- MULTER STORAGE SETUP ---
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -107,8 +97,8 @@ app.post('/api/tickets', async (req, res) => {
         const newTicket = new Ticket({ subject, description, category });
         await newTicket.save();
 
-        await transporter.sendMail({
-            from: process.env.EMAIL_USER,
+        await resend.emails.send({
+            from: 'onboarding@resend.dev',
             to: process.env.EMAIL_USER,
             subject: `New Support Ticket: ${subject}`,
             text: `You have a new support request:\n\nCategory: ${category}\nDescription: ${description}`
@@ -199,8 +189,8 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
         const resetLink = `${process.env.CLIENT_URL || 'http://localhost:5000'}/reset-password.html?token=${resetToken}`;
 
-        await transporter.sendMail({
-            from: process.env.EMAIL_USER,
+        await resend.emails.send({
+            from: 'onboarding@resend.dev',
             to: user.email,
             subject: 'Password Reset Request - StayGuwahati',
             html: `<h3>Password Reset</h3><p>Click the link below to reset your password:</p><a href="${resetLink}">${resetLink}</a>`
@@ -260,8 +250,8 @@ app.post('/api/bookings', async (req, res) => {
         await newBooking.save();
 
         if (targetEmail) {
-            await transporter.sendMail({
-                from: process.env.EMAIL_USER,
+            await resend.emails.send({
+                from: 'onboarding@resend.dev',
                 to: targetEmail, 
                 subject: 'New Booking Request for ' + formattedPropertyName,
                 html: `<h1>New Booking Request</h1><p><strong>Guest:</strong> ${firstName} ${lastName}</p><p><strong>Contact:</strong> ${email} | ${phone}</p><p><strong>Dates:</strong> ${formattedDates}</p>`
