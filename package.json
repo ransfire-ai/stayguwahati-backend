@@ -24,6 +24,7 @@
     "nodemailer": "^9.0.3",
     "postcss": "^8.5.15",
     "resend": "^6.18.0",
-    "tailwindcss": "^4.3.1"
+    "tailwindcss": "^4.3.1",
+    "twilio": "^6.0.2"
   }
 }

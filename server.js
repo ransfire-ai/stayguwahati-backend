@@ -9,9 +9,13 @@ const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Resend } = require('resend');
+const twilio = require('twilio'); // <-- Added Twilio Package
 
 // Initialize Resend (replaces Nodemailer to bypass Render SMTP blocks)
 const resend = new Resend(process.env.RESEND_API_KEY);
+
+// Initialize Twilio Client
+const twilioClient = new twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN); // <-- Added Twilio Client
 
 // Models
 const Homestay = require('./models/Homestay');
@@ -262,6 +266,34 @@ app.post('/api/bookings', async (req, res) => {
     } catch (error) {
         console.error("Booking error:", error);
         res.status(500).json({ success: false, message: "Server error during booking." });
+    }
+});
+
+// 4.5 Messaging Route via Twilio SMS Gateway
+app.post('/api/messages/send', async (req, res) => {
+    try {
+        const { recipientPhone, message, senderName, propertyTitle } = req.body;
+
+        if (!recipientPhone || !message) {
+            return res.status(400).json({ success: false, error: "Recipient phone and message are required." });
+        }
+
+        // Dispatch text message via Twilio API
+        const twilioResponse = await twilioClient.messages.create({
+            body: `[StayGuwahati] Message from host ${senderName} regarding ${propertyTitle}: "${message}"`,
+            from: process.env.TWILIO_PHONE_NUMBER,
+            to: recipientPhone
+        });
+
+        res.status(200).json({ 
+            success: true, 
+            message: "SMS dispatched successfully to customer.",
+            sid: twilioResponse.sid 
+        });
+
+    } catch (error) {
+        console.error("Twilio SMS Dispatch Error:", error);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
