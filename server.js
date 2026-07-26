@@ -117,17 +117,22 @@ app.post('/api/auth/login', async (req, res) => {
             { expiresIn: '7d' }
         );
 
+        // --- THE FIX IS HERE ---
         res.status(200).json({
             success: true,
             token: token,
-            user: { id: user._id, name: user.name, email: user.email }
+            user: { 
+                id: user._id, 
+                name: user.name, 
+                email: user.email,
+                role: user.role // Now the frontend knows if you are an admin!
+            }
         });
     } catch (error) {
         console.error("Login error:", error);
         res.status(500).json({ success: false, message: "Auth error." });
     }
 });
-
 // 3. Authentication: Register
 app.post('/api/auth/register', async (req, res) => {
     const { name, email, password } = req.body;
