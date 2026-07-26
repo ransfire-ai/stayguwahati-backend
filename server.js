@@ -86,6 +86,7 @@ const upload = multer({
 
 // Database Connection
 mongoose.connect(process.env.MONGODB_URI)
+dbName: 'test' // <--- THIS IS THE MAGIC FIX
     .then(() => console.log('Connected securely to MongoDB Atlas Instance.'))
     .catch(err => console.error('❌ DATABASE CONNECTION CRASHED!', err.message));
 
