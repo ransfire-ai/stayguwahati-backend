@@ -18,8 +18,28 @@ const Booking = require('./models/Booking');
 
 const app = express();
 
-// Middleware
-app.use(cors());
+// Middleware & Enhanced CORS Configuration
+const allowedOrigins = [
+    'https://stayguwahati.in',
+    'https://www.stayguwahati.in',
+    'http://localhost:3000',
+    'http://localhost:5000',
+    'http://127.0.0.1:5500'
+];
+
+app.use(cors({
+    origin: function (origin, callback) {
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) === -1) {
+            return callback(new Error('CORS policy violation: Origin not allowed.'), false);
+        }
+        return callback(null, true);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -32,7 +52,7 @@ if (!fs.existsSync(uploadDir)) {
 // Expose static files
 app.use('/uploads', express.static(uploadDir));
 
-// Email Transporter Configuration (Explicit host/port to prevent ETIMEDOUT on Render)
+// Email Transporter Configuration (Explicit host/port & timeout to prevent ETIMEDOUT on Render)
 const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
     port: Number(process.env.SMTP_PORT) || 465,
@@ -44,6 +64,7 @@ const transporter = nodemailer.createTransport({
     connectionTimeout: 10000, // 10 seconds timeout
     socketTimeout: 10000
 });
+
 // --- MULTER STORAGE SETUP ---
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -120,7 +141,6 @@ app.post('/api/auth/login', async (req, res) => {
             { expiresIn: '7d' }
         );
 
-        // --- THE FIX IS HERE ---
         res.status(200).json({
             success: true,
             token: token,
@@ -128,7 +148,7 @@ app.post('/api/auth/login', async (req, res) => {
                 id: user._id, 
                 name: user.name, 
                 email: user.email,
-                role: user.role // Now the frontend knows if you are an admin!
+                role: user.role 
             }
         });
     } catch (error) {
@@ -136,6 +156,7 @@ app.post('/api/auth/login', async (req, res) => {
         res.status(500).json({ success: false, message: "Auth error." });
     }
 });
+
 // 3. Authentication: Register
 app.post('/api/auth/register', async (req, res) => {
     const { name, email, password } = req.body;
@@ -193,7 +214,6 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 });
 
 // 4. Booking Routes
-// GET Bookings
 app.get('/api/bookings', async (req, res) => {
     try {
         const bookings = await Booking.find()
@@ -206,7 +226,6 @@ app.get('/api/bookings', async (req, res) => {
     }
 });
 
-// POST Booking (Robustly handles valid/invalid IDs and alternate payloads)
 app.post('/api/bookings', async (req, res) => {
     try {
         const { firstName, lastName, email, phone, propertyName, dates, homestayId, checkIn, checkOut, nights, totalPrice } = req.body;
@@ -301,7 +320,6 @@ const getHomestaysHandler = async (req, res) => {
 app.get('/api/homestays', getHomestaysHandler);
 app.get('/api/properties', getHomestaysHandler);
 
-// Get Single Homestay by ID
 app.get('/api/homestays/:id', async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -318,7 +336,6 @@ app.get('/api/homestays/:id', async (req, res) => {
     }
 });
 
-// POST Homestay Route
 app.post('/api/homestays', async (req, res) => {
     try {
         const formattedData = {
