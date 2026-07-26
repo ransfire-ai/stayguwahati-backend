@@ -9,19 +9,20 @@ const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Resend } = require('resend');
-const twilio = require('twilio'); // <-- Added Twilio Package
+const twilio = require('twilio');
 
-// Initialize Resend (replaces Nodemailer to bypass Render SMTP blocks)
+// Initialize Resend
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Initialize Twilio Client
-const twilioClient = new twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN); // <-- Added Twilio Client
+const twilioClient = new twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
 // Models
 const Homestay = require('./models/Homestay');
 const Ticket = require('./models/Ticket');
 const User = require('./models/User');
 const Booking = require('./models/Booking');
+const Message = require('./models/Message'); // <-- Added Message Model
 
 const app = express();
 
@@ -269,30 +270,68 @@ app.post('/api/bookings', async (req, res) => {
     }
 });
 
-// 4.5 Messaging Route via Twilio SMS Gateway
+// 4.5 Messaging Routes (Database Storage + Twilio SMS Dispatch)
+
+// GET: Fetch chat message logs for a specific guest and property
+app.get('/api/messages', async (req, res) => {
+    try {
+        const { guestName, propertyTitle } = req.query;
+        let query = {};
+        if (guestName) query.guestName = guestName;
+        if (propertyTitle) query.propertyTitle = propertyTitle;
+
+        const messages = await Message.find(query).sort({ createdAt: 1 });
+        res.status(200).json({ success: true, data: messages });
+    } catch (error) {
+        console.error("Fetch message logs error:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// POST: Save message to MongoDB and dispatch via Twilio SMS
 app.post('/api/messages/send', async (req, res) => {
     try {
-        const { recipientPhone, message, senderName, propertyTitle } = req.body;
+        const { recipientPhone, message, senderName, propertyTitle, guestName } = req.body;
 
-        if (!recipientPhone || !message) {
-            return res.status(400).json({ success: false, error: "Recipient phone and message are required." });
+        if (!message || !propertyTitle || !guestName) {
+            return res.status(400).json({ success: false, error: "Missing required message fields." });
         }
 
-        // Dispatch text message via Twilio API
-        const twilioResponse = await twilioClient.messages.create({
-            body: `[StayGuwahati] Message from host ${senderName} regarding ${propertyTitle}: "${message}"`,
-            from: process.env.TWILIO_PHONE_NUMBER,
-            to: recipientPhone
+        // 1. Save message to MongoDB database so it shows up in history modal
+        const newMessage = new Message({
+            propertyTitle,
+            guestName,
+            senderName: senderName || 'User',
+            message,
+            recipientPhone: recipientPhone || ''
         });
+        await newMessage.save();
+
+        // 2. Optionally send text via Twilio if phone number is provided
+        let twilioSid = null;
+        if (recipientPhone && process.env.TWILIO_PHONE_NUMBER) {
+            try {
+                const twilioResponse = await twilioClient.messages.create({
+                    body: `[StayGuwahati] Message from ${senderName} regarding ${propertyTitle}: "${message}"`,
+                    from: process.env.TWILIO_PHONE_NUMBER,
+                    to: recipientPhone
+                });
+                twilioSid = twilioResponse.sid;
+            } catch (twilioErr) {
+                console.error("Twilio SMS Dispatch Warning:", twilioErr.message);
+                // We don't fail the request if SMS fails, since the database save succeeded
+            }
+        }
 
         res.status(200).json({ 
             success: true, 
-            message: "SMS dispatched successfully to customer.",
-            sid: twilioResponse.sid 
+            message: "Message saved and dispatched successfully.",
+            data: newMessage,
+            sid: twilioSid 
         });
 
     } catch (error) {
-        console.error("Twilio SMS Dispatch Error:", error);
+        console.error("Message Saving Error:", error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
