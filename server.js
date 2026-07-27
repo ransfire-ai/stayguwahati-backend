@@ -22,7 +22,7 @@ const Homestay = require('./models/Homestay');
 const Ticket = require('./models/Ticket');
 const User = require('./models/User');
 const Booking = require('./models/Booking');
-const Message = require('./models/message'); // <-- Added Message Model
+const Message = require('./models/message');
 
 const app = express();
 
@@ -85,8 +85,7 @@ const upload = multer({
 });
 
 // Database Connection
-mongoose.connect(process.env.MONGODB_URI)
-dbName: 'test' // <--- THIS IS THE MAGIC FIX
+mongoose.connect(process.env.MONGODB_URI, { dbName: 'test' })
     .then(() => console.log('Connected securely to MongoDB Atlas Instance.'))
     .catch(err => console.error('❌ DATABASE CONNECTION CRASHED!', err.message));
 
@@ -211,28 +210,28 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
 // 4. Booking Routes
 app.get('/api/bookings', async (req, res) => {
-  try {
-    const { email } = req.query;
+    try {
+        const { email } = req.query;
+        let bookings;
 
-    let bookings;
+        if (email) {
+            bookings = await Booking.find({
+                $or: [
+                    { email },
+                    { hostEmail: email }
+                ]
+            });
+        } else {
+            bookings = await Booking.find();
+        }
 
-    if (email) {
-      bookings = await Booking.find({
-  $or: [
-    { email },
-    { hostEmail: email }
-  ]
-});
-    } else {
-      bookings = await Booking.find();
+        res.json({ success: true, data: bookings });
+    } catch (err) {
+        res.status(500).json({ success: false });
     }
+});
 
-    res.json({ success: true, data: bookings });
-
-  } catch (err) {
-    res.status(500).json({ success: false });
-  }
-});app.post('/api/bookings', async (req, res) => {
+app.post('/api/bookings', async (req, res) => {
     try {
         const { firstName, lastName, email, phone, propertyName, dates, homestayId, checkIn, checkOut, nights, totalPrice } = req.body;
 
@@ -251,27 +250,21 @@ app.get('/api/bookings', async (req, res) => {
         const formattedPropertyName = propertyName || req.body.title || 'Homestay';
 
         const newBooking = new Booking({ 
-    firstName, 
-    lastName, 
-    email, 
-    phone,
-
-    // 🔥 IMPORTANT ADDITIONS
-    userId: req.body.userId || null,
-    propertyId: validHomestayId,
-
-    propertyName: formattedPropertyName, 
-    dates: formattedDates, 
-
-    checkInDate: checkIn || null,
-    checkOutDate: checkOut || null,
-
-    homestayId: validHomestayId,
-    hostEmail: targetEmail,
-
-    nights: nights || 1,
-    totalPrice: totalPrice || 0
-});
+            firstName, 
+            lastName, 
+            email, 
+            phone,
+            userId: req.body.userId || null,
+            propertyId: validHomestayId,
+            propertyName: formattedPropertyName, 
+            dates: formattedDates, 
+            checkInDate: checkIn || null,
+            checkOutDate: checkOut || null,
+            homestayId: validHomestayId,
+            hostEmail: targetEmail,
+            nights: nights || 1,
+            totalPrice: totalPrice || 0
+        });
         
         await newBooking.save();
 
@@ -291,9 +284,7 @@ app.get('/api/bookings', async (req, res) => {
     }
 });
 
-// 4.5 Messaging Routes (Database Storage + Twilio SMS Dispatch)
-
-// GET: Fetch chat message logs for a specific guest and property
+// 4.5 Messaging Routes
 app.get('/api/messages', async (req, res) => {
     try {
         const { guestName, propertyTitle } = req.query;
@@ -309,7 +300,6 @@ app.get('/api/messages', async (req, res) => {
     }
 });
 
-// POST: Save message to MongoDB and dispatch via Twilio SMS
 app.post('/api/messages/send', async (req, res) => {
     try {
         const { recipientPhone, message, senderName, propertyTitle, guestName } = req.body;
@@ -318,7 +308,6 @@ app.post('/api/messages/send', async (req, res) => {
             return res.status(400).json({ success: false, error: "Missing required message fields." });
         }
 
-        // 1. Save message to MongoDB database so it shows up in history modal
         const newMessage = new Message({
             propertyTitle,
             guestName,
@@ -328,7 +317,6 @@ app.post('/api/messages/send', async (req, res) => {
         });
         await newMessage.save();
 
-        // 2. Optionally send text via Twilio if phone number is provided
         let twilioSid = null;
         if (recipientPhone && process.env.TWILIO_PHONE_NUMBER) {
             try {
@@ -340,7 +328,6 @@ app.post('/api/messages/send', async (req, res) => {
                 twilioSid = twilioResponse.sid;
             } catch (twilioErr) {
                 console.error("Twilio SMS Dispatch Warning:", twilioErr.message);
-                // We don't fail the request if SMS fails, since the database save succeeded
             }
         }
 
