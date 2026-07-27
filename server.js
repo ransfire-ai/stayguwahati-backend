@@ -209,25 +209,28 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 });
 
 // 4. Booking Routes
+// UPDATE THIS ROUTE IN server.js
 app.get('/api/bookings', async (req, res) => {
     try {
         const { email } = req.query;
-        let bookings;
+        let query = {};
 
         if (email) {
-            bookings = await Booking.find({
+            query = {
                 $or: [
-                    { email },
-                    { hostEmail: email }
+                    { email: email.toLowerCase() },
+                    { hostEmail: email.toLowerCase() }
                 ]
-            });
-        } else {
-            bookings = await Booking.find();
+            };
         }
+
+        // 🔥 Added .populate('homestayId') to pull photos and property details
+        const bookings = await Booking.find(query).populate('homestayId');
 
         res.json({ success: true, data: bookings });
     } catch (err) {
-        res.status(500).json({ success: false });
+        console.error("Fetch bookings error:", err);
+        res.status(500).json({ success: false, message: "Error loading bookings" });
     }
 });
 
