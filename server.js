@@ -211,30 +211,28 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
 // 4. Booking Routes
 app.get('/api/bookings', async (req, res) => {
-    try {
-        const { email, hostEmail } = req.query;
-        let queryFilter = {};
+  try {
+    const { email } = req.query;
 
-        // Case-insensitive email match for traveler mode
-        if (email) {
-            queryFilter.email = { $regex: new RegExp(`^${email.trim()}$`, 'i') };
-        } 
-        // Optional: Filter for host mode
-        else if (hostEmail) {
-            queryFilter.hostEmail = { $regex: new RegExp(`^${hostEmail.trim()}$`, 'i') };
-        }
+    let bookings;
 
-        const bookings = await Booking.find(queryFilter)
-            .populate('homestayId')
-            .sort({ createdAt: -1 });
-
-        res.status(200).json({ success: true, count: bookings.length, data: bookings });
-    } catch (error) {
-        console.error("Fetch bookings error:", error);
-        res.status(500).json({ success: false, message: "Failed to fetch bookings." });
-    }
+    if (email) {
+      bookings = await Booking.find({
+  $or: [
+    { email },
+    { hostEmail: email }
+  ]
 });
-app.post('/api/bookings', async (req, res) => {
+    } else {
+      bookings = await Booking.find();
+    }
+
+    res.json({ success: true, data: bookings });
+
+  } catch (err) {
+    res.status(500).json({ success: false });
+  }
+});app.post('/api/bookings', async (req, res) => {
     try {
         const { firstName, lastName, email, phone, propertyName, dates, homestayId, checkIn, checkOut, nights, totalPrice } = req.body;
 
@@ -253,17 +251,27 @@ app.post('/api/bookings', async (req, res) => {
         const formattedPropertyName = propertyName || req.body.title || 'Homestay';
 
         const newBooking = new Booking({ 
-            firstName, 
-            lastName, 
-            email, 
-            phone, 
-            propertyName: formattedPropertyName, 
-            dates: formattedDates, 
-            homestayId: validHomestayId,
-            hostEmail: targetEmail,
-            nights: nights || 1,
-            totalPrice: totalPrice || 0
-        });
+    firstName, 
+    lastName, 
+    email, 
+    phone,
+
+    // 🔥 IMPORTANT ADDITIONS
+    userId: req.body.userId || null,
+    propertyId: validHomestayId,
+
+    propertyName: formattedPropertyName, 
+    dates: formattedDates, 
+
+    checkInDate: checkIn || null,
+    checkOutDate: checkOut || null,
+
+    homestayId: validHomestayId,
+    hostEmail: targetEmail,
+
+    nights: nights || 1,
+    totalPrice: totalPrice || 0
+});
         
         await newBooking.save();
 
