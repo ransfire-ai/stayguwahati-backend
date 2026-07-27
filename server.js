@@ -212,16 +212,28 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 // 4. Booking Routes
 app.get('/api/bookings', async (req, res) => {
     try {
-        const bookings = await Booking.find()
+        const { email, hostEmail } = req.query;
+        let queryFilter = {};
+
+        // Case-insensitive email match for traveler mode
+        if (email) {
+            queryFilter.email = { $regex: new RegExp(`^${email.trim()}$`, 'i') };
+        } 
+        // Optional: Filter for host mode
+        else if (hostEmail) {
+            queryFilter.hostEmail = { $regex: new RegExp(`^${hostEmail.trim()}$`, 'i') };
+        }
+
+        const bookings = await Booking.find(queryFilter)
             .populate('homestayId')
             .sort({ createdAt: -1 });
+
         res.status(200).json({ success: true, count: bookings.length, data: bookings });
     } catch (error) {
         console.error("Fetch bookings error:", error);
         res.status(500).json({ success: false, message: "Failed to fetch bookings." });
     }
 });
-
 app.post('/api/bookings', async (req, res) => {
     try {
         const { firstName, lastName, email, phone, propertyName, dates, homestayId, checkIn, checkOut, nights, totalPrice } = req.body;
