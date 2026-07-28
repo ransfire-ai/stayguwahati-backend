@@ -126,11 +126,11 @@ app.post('/api/tickets', async (req, res) => {
         await newTicket.save();
 
         await resend.emails.send({
-            from: 'onboarding@resend.dev',
-            to: process.env.EMAIL_USER,
-            subject: `New Support Ticket: ${subject}`,
-            text: `You have a new support request:\n\nCategory: ${category}\nDescription: ${description}`
-        });
+    from: 'StayGuwahati <noreply@stayguwahati.in>', // 👈 Updated from onboarding@resend.dev
+    to: user.email,
+    subject: 'Password Reset Request - StayGuwahati',
+    html: `<h3>Password Reset</h3><p>Click the link below to reset your password (valid for 1 hour):</p><a href="${resetLink}">${resetLink}</a>`
+});
 
         res.status(200).json({ success: true, message: 'Ticket saved and email sent!' });
     } catch (err) {
@@ -220,11 +220,11 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         const resetLink = `${clientUrl}/reset-password.html?token=${resetToken}`;
 
         await resend.emails.send({
-            from: 'onboarding@resend.dev',
-            to: user.email,
-            subject: 'Password Reset Request - StayGuwahati',
-            html: `<h3>Password Reset</h3><p>Click the link below to reset your password (valid for 1 hour):</p><a href="${resetLink}">${resetLink}</a>`
-        });
+    from: 'StayGuwahati <noreply@stayguwahati.in>', // 👈 Updated from onboarding@resend.dev
+    to: targetEmail, 
+    subject: 'New Booking Request for ' + formattedPropertyName,
+    html: `<h1>New Booking Request</h1><p><strong>Guest:</strong> ${firstName} ${lastName}</p><p><strong>Contact:</strong> ${email} | ${phone}</p><p><strong>Dates:</strong> ${formattedDates}</p>`
+});
 
         res.status(200).json({ success: true, message: "Reset link sent to your email!" });
     } catch (error) {
@@ -326,12 +326,11 @@ app.post('/api/bookings', async (req, res) => {
 
         if (targetEmail) {
             await resend.emails.send({
-                from: 'onboarding@resend.dev',
-                to: targetEmail, 
-                subject: 'New Booking Request for ' + formattedPropertyName,
-                html: `<h1>New Booking Request</h1><p><strong>Guest:</strong> ${firstName} ${lastName}</p><p><strong>Contact:</strong> ${email} | ${phone}</p><p><strong>Dates:</strong> ${formattedDates}</p>`
-            });
-        }
+    from: 'StayGuwahati <support@stayguwahati.in>', // 👈 Updated from onboarding@resend.dev
+    to: process.env.EMAIL_USER,
+    subject: `New Support Ticket: ${subject}`,
+    text: `You have a new support request:\n\nCategory: ${category}\nDescription: ${description}`
+});
 
         res.status(200).json({ success: true, message: "Booking saved and owner notified!", data: newBooking });
     } catch (error) {
