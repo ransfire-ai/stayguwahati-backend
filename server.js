@@ -24,22 +24,29 @@ const Message = require('./models/message');
 
 const app = express();
 
-// CORS Configuration
+// Enhanced CORS Configuration
 const allowedOrigins = [
     'https://stayguwahati.in',
     'https://www.stayguwahati.in',
+    'https://stayguwahati-backend.onrender.com',
     'http://localhost:3000',
     'http://localhost:5000',
+    'http://localhost:5173',
+    'http://localhost:5500',
     'http://127.0.0.1:5500'
 ];
 
 app.use(cors({
     origin: function (origin, callback) {
+        // Allow non-browser requests (Postman, mobile apps, server-to-server)
         if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) === -1) {
-            return callback(new Error('CORS policy violation: Origin not allowed.'), false);
+        
+        if (allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        } else {
+            // Return false smoothly without throwing an Express error
+            return callback(null, false);
         }
-        return callback(null, true);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -209,7 +216,8 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         user.resetTokenExpiry = Date.now() + 3600000; // Token valid for 1 hour
         await user.save();
 
-        const resetLink = `${process.env.CLIENT_URL || 'http://localhost:5000'}/reset-password.html?token=${resetToken}`;
+        const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
+        const resetLink = `${clientUrl}/reset-password.html?token=${resetToken}`;
 
         await resend.emails.send({
             from: 'onboarding@resend.dev',
