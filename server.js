@@ -24,7 +24,7 @@ const Message = require('./models/message');
 
 const app = express();
 
-// Enhanced CORS Configuration
+// CORS Configuration
 const allowedOrigins = [
     'https://stayguwahati.in',
     'https://www.stayguwahati.in',
@@ -38,13 +38,10 @@ const allowedOrigins = [
 
 app.use(cors({
     origin: function (origin, callback) {
-        // Allow non-browser requests (Postman, mobile apps, server-to-server)
         if (!origin) return callback(null, true);
-        
         if (allowedOrigins.includes(origin)) {
             return callback(null, true);
         } else {
-            // Return false smoothly without throwing an Express error
             return callback(null, false);
         }
     },
@@ -126,11 +123,11 @@ app.post('/api/tickets', async (req, res) => {
         await newTicket.save();
 
         await resend.emails.send({
-    from: 'StayGuwahati <noreply@stayguwahati.in>', // 👈 Updated from onboarding@resend.dev
-    to: user.email,
-    subject: 'Password Reset Request - StayGuwahati',
-    html: `<h3>Password Reset</h3><p>Click the link below to reset your password (valid for 1 hour):</p><a href="${resetLink}">${resetLink}</a>`
-});
+            from: 'onboarding@resend.dev',
+            to: process.env.EMAIL_USER,
+            subject: `New Support Ticket: ${subject}`,
+            text: `You have a new support request:\n\nCategory: ${category}\nDescription: ${description}`
+        });
 
         res.status(200).json({ success: true, message: 'Ticket saved and email sent!' });
     } catch (err) {
@@ -205,30 +202,35 @@ app.post('/api/auth/forgot-password', async (req, res) => {
             return res.status(400).json({ success: false, message: "Email is required." });
         }
 
+        console.log(`[RESET] Password reset requested for: ${email}`);
+
         const user = await User.findOne({ email: email.toLowerCase() });
         
         if (!user) {
+            console.log(`[RESET] ❌ Email ${email} not found in database.`);
             return res.status(200).json({ success: true, message: "If your email is registered, a reset link has been sent." });
         }
 
+        console.log(`[RESET] ✅ User found. Generating token...`);
         const resetToken = crypto.randomBytes(32).toString('hex');
         user.resetToken = resetToken;
-        user.resetTokenExpiry = Date.now() + 3600000; // Token valid for 1 hour
+        user.resetTokenExpiry = Date.now() + 3600000; // 1 hour validity
         await user.save();
 
         const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
         const resetLink = `${clientUrl}/reset-password.html?token=${resetToken}`;
 
-        await resend.emails.send({
-    from: 'StayGuwahati <noreply@stayguwahati.in>', // 👈 Updated from onboarding@resend.dev
-    to: targetEmail, 
-    subject: 'New Booking Request for ' + formattedPropertyName,
-    html: `<h1>New Booking Request</h1><p><strong>Guest:</strong> ${firstName} ${lastName}</p><p><strong>Contact:</strong> ${email} | ${phone}</p><p><strong>Dates:</strong> ${formattedDates}</p>`
-});
+        const emailResult = await resend.emails.send({
+            from: 'onboarding@resend.dev',
+            to: user.email,
+            subject: 'Password Reset Request - StayGuwahati',
+            html: `<h3>Password Reset</h3><p>Click the link below to reset your password (valid for 1 hour):</p><a href="${resetLink}">${resetLink}</a>`
+        });
 
+        console.log(`[RESET] ✉️ Resend API Response:`, emailResult);
         res.status(200).json({ success: true, message: "Reset link sent to your email!" });
     } catch (error) {
-        console.error("Forgot password error:", error);
+        console.error("[RESET] ❌ Error during password reset:", error);
         res.status(500).json({ success: false, message: "Server error during password reset." });
     }
 });
@@ -326,11 +328,12 @@ app.post('/api/bookings', async (req, res) => {
 
         if (targetEmail) {
             await resend.emails.send({
-    from: 'StayGuwahati <support@stayguwahati.in>', // 👈 Updated from onboarding@resend.dev
-    to: process.env.EMAIL_USER,
-    subject: `New Support Ticket: ${subject}`,
-    text: `You have a new support request:\n\nCategory: ${category}\nDescription: ${description}`
-});
+                from: 'onboarding@resend.dev',
+                to: targetEmail, 
+                subject: 'New Booking Request for ' + formattedPropertyName,
+                html: `<h1>New Booking Request</h1><p><strong>Guest:</strong> ${firstName} ${lastName}</p><p><strong>Contact:</strong> ${email} | ${phone}</p><p><strong>Dates:</strong> ${formattedDates}</p>`
+            });
+        }
 
         res.status(200).json({ success: true, message: "Booking saved and owner notified!", data: newBooking });
     } catch (error) {
