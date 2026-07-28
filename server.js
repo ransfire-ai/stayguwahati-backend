@@ -11,11 +11,9 @@ const jwt = require('jsonwebtoken');
 const { Resend } = require('resend');
 const twilio = require('twilio');
 
-// Initialize Resend
+// Initialize Resend & Twilio
 const resend = new Resend(process.env.RESEND_API_KEY);
-
-// Initialize Twilio Client
-const twilioClient = new twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
 // Models
 const Homestay = require('./models/Homestay');
@@ -26,7 +24,7 @@ const Message = require('./models/message');
 
 const app = express();
 
-// Middleware & Enhanced CORS Configuration
+// CORS Configuration
 const allowedOrigins = [
     'https://stayguwahati.in',
     'https://www.stayguwahati.in',
@@ -85,9 +83,27 @@ const upload = multer({
 });
 
 // Database Connection
-mongoose.connect(process.env.MONGODB_URI, { dbName: 'test' })
+mongoose.connect(process.env.MONGODB_URI)
     .then(() => console.log('Connected securely to MongoDB Atlas Instance.'))
     .catch(err => console.error('❌ DATABASE CONNECTION CRASHED!', err.message));
+
+// --- AUTHENTICATION MIDDLEWARE ---
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+        return res.status(401).json({ success: false, message: 'Access denied. Token missing.' });
+    }
+
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+        if (err) {
+            return res.status(403).json({ success: false, message: 'Invalid or expired token.' });
+        }
+        req.user = user;
+        next();
+    });
+};
 
 // --- API ROUTES ---
 
@@ -131,8 +147,8 @@ app.post('/api/auth/login', async (req, res) => {
         if (!isMatch) return res.status(400).json({ success: false, message: "Invalid credentials." });
 
         const token = jwt.sign(
-            { userId: user._id, email: user.email },
-            process.env.JWT_SECRET || 'fallback_secret_key',
+            { userId: user._id, email: user.email, role: user.role },
+            process.env.JWT_SECRET,
             { expiresIn: '7d' }
         );
 
@@ -190,6 +206,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
         const resetToken = crypto.randomBytes(32).toString('hex');
         user.resetToken = resetToken;
+        user.resetTokenExpiry = Date.now() + 3600000; // Token valid for 1 hour
         await user.save();
 
         const resetLink = `${process.env.CLIENT_URL || 'http://localhost:5000'}/reset-password.html?token=${resetToken}`;
@@ -198,7 +215,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
             from: 'onboarding@resend.dev',
             to: user.email,
             subject: 'Password Reset Request - StayGuwahati',
-            html: `<h3>Password Reset</h3><p>Click the link below to reset your password:</p><a href="${resetLink}">${resetLink}</a>`
+            html: `<h3>Password Reset</h3><p>Click the link below to reset your password (valid for 1 hour):</p><a href="${resetLink}">${resetLink}</a>`
         });
 
         res.status(200).json({ success: true, message: "Reset link sent to your email!" });
@@ -208,8 +225,38 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     }
 });
 
+// 3.6 Authentication: Reset Password Complete
+app.post('/api/auth/reset-password', async (req, res) => {
+    try {
+        const { token, newPassword } = req.body;
+
+        if (!token || !newPassword) {
+            return res.status(400).json({ success: false, message: "Reset token and new password are required." });
+        }
+
+        const user = await User.findOne({
+            resetToken: token,
+            resetTokenExpiry: { $gt: Date.now() }
+        });
+
+        if (!user) {
+            return res.status(400).json({ success: false, message: "Invalid or expired reset token." });
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        user.passwordHash = await bcrypt.hash(newPassword, salt);
+        user.resetToken = undefined;
+        user.resetTokenExpiry = undefined;
+        await user.save();
+
+        res.status(200).json({ success: true, message: "Password reset successful! You can now log in." });
+    } catch (error) {
+        console.error("Reset password error:", error);
+        res.status(500).json({ success: false, message: "Server error during password reset." });
+    }
+});
+
 // 4. Booking Routes
-// UPDATE THIS ROUTE IN server.js
 app.get('/api/bookings', async (req, res) => {
     try {
         const { email } = req.query;
@@ -224,9 +271,7 @@ app.get('/api/bookings', async (req, res) => {
             };
         }
 
-        // 🔥 Added .populate('homestayId') to pull photos and property details
         const bookings = await Booking.find(query).populate('homestayId');
-
         res.json({ success: true, data: bookings });
     } catch (err) {
         console.error("Fetch bookings error:", err);
@@ -428,8 +473,8 @@ app.post('/api/homestays', async (req, res) => {
     }
 });
 
-// 7. Admin Status Update
-app.patch('/api/admin/homestays/:id/status', async (req, res) => {
+// 7. Admin Status Update (Protected by JWT)
+app.patch('/api/admin/homestays/:id/status', authenticateToken, async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ success: false, message: "Invalid Property ID format" });
