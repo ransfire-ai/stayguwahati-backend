@@ -331,38 +331,82 @@ app.post('/api/bookings', async (req, res) => {
         
         await newBooking.save();
 
+        // 1. EMAIL TO THE HOST (Owner Notification)
         if (targetEmail) {
-            await resend.emails.send({
-                from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
-                to: targetEmail, 
-                subject: 'New Booking Request for ' + formattedPropertyName,
-                html: `<h1>New Booking Request</h1><p><strong>Guest:</strong> ${firstName} ${lastName}</p><p><strong>Contact:</strong> ${email} | ${phone}</p><p><strong>Dates:</strong> ${formattedDates}</p>`
-            });
+            try {
+                await resend.emails.send({
+                    from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
+                    to: targetEmail, 
+                    subject: 'New Booking Request for ' + formattedPropertyName,
+                    html: `<h2>New Booking Request</h2>
+                           <p><strong>Guest:</strong> ${firstName} ${lastName}</p>
+                           <p><strong>Contact:</strong> ${email} | ${phone}</p>
+                           <p><strong>Dates:</strong> ${formattedDates}</p>
+                           <p><strong>Total Price:</strong> ₹${totalPrice || 0}</p>`
+                });
+                console.log(`[BOOKING] Host email sent to: ${targetEmail}`);
+            } catch (hostErr) {
+                console.error("[BOOKING] Host email error:", hostErr.message);
+            }
         }
 
-        res.status(200).json({ success: true, message: "Booking saved and owner notified!", data: newBooking });
+        // 2. EMAIL TO THE GUEST (Booking Receipt)
+        if (email) {
+            try {
+                await resend.emails.send({
+                    from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
+                    to: email, 
+                    subject: 'Booking Confirmation - ' + formattedPropertyName,
+                    html: `<h2>Thank you for booking with StayGuwahati!</h2>
+                           <p>Hi ${firstName},</p>
+                           <p>We have received your reservation request for <strong>${formattedPropertyName}</strong>.</p>
+                           <p><strong>Dates:</strong> ${formattedDates}</p>
+                           <p><strong>Nights:</strong> ${nights || 1}</p>
+                           <p><strong>Total Price:</strong> ₹${totalPrice || 0}</p>
+                           <hr />
+                           <p>The host will contact you shortly to confirm your stay.</p>`
+                });
+                console.log(`[BOOKING] Guest email sent to: ${email}`);
+            } catch (guestErr) {
+                console.error("[BOOKING] Guest email error:", guestErr.message);
+            }
+        }
+
+        // 3. WHATSAPP & SMS TO THE GUEST (Twilio)
+        if (phone && process.env.TWILIO_PHONE_NUMBER) {
+            const formattedPhone = phone.startsWith('+') ? phone : `+91${phone.trim()}`;
+
+            // Try sending WhatsApp first
+            try {
+                await twilioClient.messages.create({
+                    from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
+                    to: `whatsapp:${formattedPhone}`,
+                    body: `Hello ${firstName}! 🏠 Your StayGuwahati booking request for *${formattedPropertyName}* (${formattedDates}) has been received. Total: ₹${totalPrice || 0}. We will contact you shortly!`
+                });
+                console.log(`[BOOKING] WhatsApp sent to: ${formattedPhone}`);
+            } catch (whatsappErr) {
+                console.warn("[BOOKING] WhatsApp failed, attempting SMS fallback:", whatsappErr.message);
+
+                // Fallback to standard SMS if WhatsApp fails
+                try {
+                    await twilioClient.messages.create({
+                        from: process.env.TWILIO_PHONE_NUMBER,
+                        to: formattedPhone,
+                        body: `Hello ${firstName}! Your StayGuwahati booking request for ${formattedPropertyName} (${formattedDates}) is received. Total: RS ${totalPrice || 0}.`
+                    });
+                    console.log(`[BOOKING] Fallback SMS sent to: ${formattedPhone}`);
+                } catch (smsErr) {
+                    console.error("[BOOKING] SMS dispatch failed:", smsErr.message);
+                }
+            }
+        }
+
+        res.status(200).json({ success: true, message: "Booking saved and notifications dispatched!", data: newBooking });
     } catch (error) {
-        console.error("Booking error:", error);
+        console.error("Booking route error:", error);
         res.status(500).json({ success: false, message: "Server error during booking." });
     }
 });
-
-// 4.5 Messaging Routes
-app.get('/api/messages', async (req, res) => {
-    try {
-        const { guestName, propertyTitle } = req.query;
-        let query = {};
-        if (guestName) query.guestName = guestName;
-        if (propertyTitle) query.propertyTitle = propertyTitle;
-
-        const messages = await Message.find(query).sort({ createdAt: 1 });
-        res.status(200).json({ success: true, data: messages });
-    } catch (error) {
-        console.error("Fetch message logs error:", error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
 app.post('/api/messages/send', async (req, res) => {
     try {
         const { recipientPhone, message, senderName, propertyTitle, guestName } = req.body;
