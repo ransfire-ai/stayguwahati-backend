@@ -152,7 +152,6 @@ app.post('/api/auth/login', async (req, res) => {
         const isMatch = await bcrypt.compare(password, user.passwordHash);
         if (!isMatch) return res.status(400).json({ success: false, message: "Invalid credentials." });
 
-        // Safe JWT Secret Fallback
         const jwtSecret = process.env.JWT_SECRET || 'stayguwahati_jwt_super_secret_key_2026';
 
         const token = jwt.sign(
@@ -309,7 +308,6 @@ app.post('/api/bookings', async (req, res) => {
                 validHomestayId = homestayId;
                 targetEmail = property.ownerEmail || (property.host && property.host.email) || '';
                 
-                // Extract location details if present on the homestay model
                 propertyAddress = property.address || property.locality || property.location || 'Guwahati, Assam';
                 googleMapsUrl = property.mapUrl || property.googleMapsLink || '';
             }
@@ -318,7 +316,6 @@ app.post('/api/bookings', async (req, res) => {
         const formattedDates = dates || (checkIn && checkOut ? `${checkIn} to ${checkOut}` : 'N/A');
         const formattedPropertyName = propertyName || req.body.title || 'Homestay';
 
-        // Fallback map URL if no custom link exists in MongoDB
         if (!googleMapsUrl) {
             const searchQuery = encodeURIComponent(`${formattedPropertyName} ${propertyAddress}`);
             googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${searchQuery}`;
@@ -483,13 +480,6 @@ app.post('/api/bookings', async (req, res) => {
                 }
             }
         }
-
-        res.status(200).json({ success: true, message: "Booking saved and notifications dispatched!", data: newBooking });
-    } catch (error) {
-        console.error("Booking route error:", error);
-        res.status(500).json({ success: false, message: "Server error during booking." });
-    }
-});
 
         res.status(200).json({ success: true, message: "Booking saved and notifications dispatched!", data: newBooking });
     } catch (error) {
