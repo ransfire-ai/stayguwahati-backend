@@ -307,11 +307,34 @@ app.post('/api/bookings', async (req, res) => {
             if (property) {
                 validHomestayId = homestayId;
                 targetEmail = property.ownerEmail || (property.host && property.host.email) || '';
-                
                 propertyAddress = property.address || property.locality || property.location || 'Guwahati, Assam';
                 googleMapsUrl = property.mapUrl || property.googleMapsLink || '';
             }
         }
+
+        // --- 🚨 AVAILABILITY CHECK: PREVENT DOUBLE BOOKING 🚨 ---
+        if (validHomestayId && checkIn && checkOut) {
+            const requestedCheckIn = new Date(checkIn);
+            const requestedCheckOut = new Date(checkOut);
+
+            const existingBooking = await Booking.findOne({
+                $or: [
+                    { homestayId: validHomestayId },
+                    { propertyId: validHomestayId }
+                ],
+                status: { $ne: 'cancelled' }, // Ignore cancelled bookings
+                checkInDate: { $lt: requestedCheckOut },
+                checkOutDate: { $gt: requestedCheckIn }
+            });
+
+            if (existingBooking) {
+                return res.status(400).json({ 
+                    success: false, 
+                    message: "This property is already booked for the selected dates. Please choose different dates." 
+                });
+            }
+        }
+        // ----------------------------------------------------
 
         const formattedDates = dates || (checkIn && checkOut ? `${checkIn} to ${checkOut}` : 'N/A');
         const formattedPropertyName = propertyName || req.body.title || 'Homestay';
@@ -330,8 +353,8 @@ app.post('/api/bookings', async (req, res) => {
             propertyId: validHomestayId,
             propertyName: formattedPropertyName, 
             dates: formattedDates, 
-            checkInDate: checkIn || null,
-            checkOutDate: checkOut || null,
+            checkInDate: checkIn ? new Date(checkIn) : null,
+            checkOutDate: checkOut ? new Date(checkOut) : null,
             homestayId: validHomestayId,
             hostEmail: targetEmail,
             nights: nights || 1,
@@ -353,13 +376,12 @@ app.post('/api/bookings', async (req, res) => {
                            <p><strong>Dates:</strong> ${formattedDates}</p>
                            <p><strong>Total Price:</strong> ₹${totalPrice || 0}</p>`
                 });
-                console.log(`[BOOKING] Host email sent to: ${targetEmail}`);
             } catch (hostErr) {
                 console.error("[BOOKING] Host email error:", hostErr.message);
             }
         }
 
-        // 2. EMAIL TO THE GUEST (Includes Google Maps Button)
+        // 2. EMAIL TO THE GUEST
         if (email) {
             try {
                 await resend.emails.send({
@@ -367,116 +389,51 @@ app.post('/api/bookings', async (req, res) => {
                     to: email, 
                     subject: 'Booking Request Received - ' + formattedPropertyName,
                     html: `
-                    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f6f9; padding: 40px 15px; margin: 0;">
-                        <div style="max-width: 580px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
-                            
-                            <!-- Header / Branding Banner -->
+                    <div style="font-family: sans-serif; background-color: #f4f6f9; padding: 40px 15px;">
+                        <div style="max-width: 580px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0;">
                             <div style="background-color: #0f172a; padding: 28px 32px; text-align: center;">
-                                <h1 style="color: #ffffff; margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.5px;">StayGuwahati</h1>
+                                <h1 style="color: #ffffff; margin: 0; font-size: 22px;">StayGuwahati</h1>
                             </div>
-
-                            <!-- Main Body -->
                             <div style="padding: 32px 28px;">
-                                <h2 style="color: #0f172a; margin-top: 0; font-size: 20px; font-weight: 600; margin-bottom: 8px;">Booking Request Received! 🎉</h2>
-                                <p style="font-size: 15px; color: #475569; margin: 0 0 20px 0; line-height: 1.5;">
-                                    Hi <strong>${firstName}</strong>,
-                                </p>
-                                <p style="font-size: 15px; color: #475569; margin: 0 0 24px 0; line-height: 1.5;">
-                                    Thank you for choosing StayGuwahati! We have received your reservation request for <strong style="color: #0f172a;">${formattedPropertyName}</strong>.
-                                </p>
-
-                                <!-- Details Box -->
+                                <h2 style="color: #0f172a; margin-top: 0; font-size: 20px;">Booking Request Received! 🎉</h2>
+                                <p style="font-size: 15px; color: #475569;">Hi <strong>${firstName}</strong>,</p>
+                                <p style="font-size: 15px; color: #475569;">Thank you for choosing StayGuwahati! We have received your request for <strong>${formattedPropertyName}</strong>.</p>
                                 <div style="background-color: #f8fafc; border-radius: 8px; padding: 20px; margin-bottom: 20px; border: 1px solid #e2e8f0;">
-                                    <h3 style="margin: 0 0 16px 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; color: #64748b; font-weight: 600;">Reservation Overview</h3>
-                                    
-                                    <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-                                        <tr>
-                                            <td style="padding: 10px 0; color: #64748b; width: 40%;">Property</td>
-                                            <td style="padding: 10px 0; color: #0f172a; font-weight: 600; text-align: right;">${formattedPropertyName}</td>
-                                        </tr>
-                                        <tr>
-                                            <td style="padding: 10px 0; color: #64748b; border-top: 1px solid #e2e8f0;">Dates</td>
-                                            <td style="padding: 10px 0; color: #0f172a; font-weight: 600; text-align: right; border-top: 1px solid #e2e8f0;">${formattedDates}</td>
-                                        </tr>
-                                        <tr>
-                                            <td style="padding: 10px 0; color: #64748b; border-top: 1px solid #e2e8f0;">Duration</td>
-                                            <td style="padding: 10px 0; color: #0f172a; font-weight: 600; text-align: right; border-top: 1px solid #e2e8f0;">${nights || 1} Night(s)</td>
-                                        </tr>
-                                        <tr>
-                                            <td style="padding: 12px 0 0 0; color: #0f172a; font-weight: 700; border-top: 2px solid #cbd5e1; font-size: 15px;">Total Amount</td>
-                                            <td style="padding: 12px 0 0 0; color: #16a34a; font-weight: 700; font-size: 18px; text-align: right; border-top: 2px solid #cbd5e1;">₹${totalPrice || 0}</td>
-                                        </tr>
+                                    <table style="width: 100%; font-size: 14px;">
+                                        <tr><td>Property:</td><td style="text-align: right; font-weight: 600;">${formattedPropertyName}</td></tr>
+                                        <tr><td>Dates:</td><td style="text-align: right; font-weight: 600;">${formattedDates}</td></tr>
+                                        <tr><td>Duration:</td><td style="text-align: right; font-weight: 600;">${nights || 1} Night(s)</td></tr>
+                                        <tr><td style="font-weight: 700; font-size: 15px;">Total:</td><td style="text-align: right; font-weight: 700; color: #16a34a; font-size: 18px;">₹${totalPrice || 0}</td></tr>
                                     </table>
                                 </div>
-
-                                <!-- Location & Map Card -->
-                                <div style="background-color: #ffffff; border-radius: 8px; padding: 20px; margin-bottom: 24px; border: 1px solid #e2e8f0; text-align: center;">
-                                    <h3 style="margin: 0 0 6px 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; color: #64748b; font-weight: 600;">Property Location</h3>
-                                    <p style="margin: 0 0 16px 0; font-size: 14px; color: #334155;">📍 ${propertyAddress}</p>
-                                    <a href="${googleMapsUrl}" target="_blank" style="display: inline-block; background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 11px 22px; border-radius: 6px; font-size: 14px; font-weight: 600;">
-                                        Get Directions on Google Maps
-                                    </a>
+                                <div style="text-align: center; margin-bottom: 24px;">
+                                    <p style="margin-bottom: 12px; font-size: 14px; color: #334155;">📍 ${propertyAddress}</p>
+                                    <a href="${googleMapsUrl}" target="_blank" style="background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 11px 22px; border-radius: 6px; font-weight: 600; display: inline-block;">Get Directions on Google Maps</a>
                                 </div>
-
-                                <!-- Next Steps Callout -->
-                                <div style="background-color: #f0fdf4; border-left: 4px solid #16a34a; padding: 14px 16px; border-radius: 4px; margin-bottom: 24px;">
-                                    <p style="margin: 0; font-size: 14px; color: #166534; line-height: 1.4;">
-                                        📌 <strong>Next Step:</strong> Your host will review your request and contact you shortly to confirm your check-in details.
-                                    </p>
-                                </div>
-
-                                <p style="font-size: 14px; color: #64748b; margin: 0; line-height: 1.5;">
-                                    If you have any questions or need to make changes, simply reply directly to this email.
-                                </p>
                             </div>
-
-                            <!-- Footer -->
-                            <div style="background-color: #f8fafc; padding: 20px 28px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 12px; color: #94a3b8;">
-                                <p style="margin: 0 0 4px 0; font-weight: 500; color: #64748b;">StayGuwahati</p>
-                                <p style="margin: 0;">Guwahati, Assam, India • <a href="https://stayguwahati.in" style="color: #2563eb; text-decoration: none;">stayguwahati.in</a></p>
-                            </div>
-
                         </div>
-                    </div>
-                    `
+                    </div>`
                 });
-                console.log(`[BOOKING] Guest email sent to: ${email}`);
             } catch (guestErr) {
                 console.error("[BOOKING] Guest email error:", guestErr.message);
             }
         }
 
-        // 3. WHATSAPP & SMS TO THE GUEST (Twilio)
+        // 3. WHATSAPP & SMS TO THE GUEST
         if (phone) {
             const formattedPhone = phone.startsWith('+') ? phone : `+91${phone.trim()}`;
-
             if (process.env.TWILIO_WHATSAPP_NUMBER) {
                 try {
                     const waSender = process.env.TWILIO_WHATSAPP_NUMBER.trim().startsWith('+') 
                         ? process.env.TWILIO_WHATSAPP_NUMBER.trim() 
                         : `+${process.env.TWILIO_WHATSAPP_NUMBER.trim()}`;
-
                     await twilioClient.messages.create({
                         from: `whatsapp:${waSender}`,
                         to: `whatsapp:${formattedPhone}`,
                         body: `Hello ${firstName}! 🏠 Your StayGuwahati booking request for *${formattedPropertyName}* (${formattedDates}) has been received. Total: ₹${totalPrice || 0}. Location: ${googleMapsUrl}`
                     });
-                    console.log(`[BOOKING] WhatsApp sent to: ${formattedPhone}`);
                 } catch (whatsappErr) {
                     console.error("[BOOKING] WhatsApp error:", whatsappErr.message);
-                }
-            }
-
-            if (process.env.TWILIO_PHONE_NUMBER) {
-                try {
-                    await twilioClient.messages.create({
-                        from: process.env.TWILIO_PHONE_NUMBER.trim(),
-                        to: formattedPhone,
-                        body: `Hello ${firstName}! Your StayGuwahati booking request for ${formattedPropertyName} (${formattedDates}) is received. Total: RS ${totalPrice || 0}.`
-                    });
-                    console.log(`[BOOKING] SMS sent to: ${formattedPhone}`);
-                } catch (smsErr) {
-                    console.error("[BOOKING] SMS error:", smsErr.message);
                 }
             }
         }
@@ -487,7 +444,6 @@ app.post('/api/bookings', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error during booking." });
     }
 });
-
 app.post('/api/messages/send', async (req, res) => {
     try {
         const { recipientPhone, message, senderName, propertyTitle, guestName } = req.body;
