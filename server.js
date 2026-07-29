@@ -373,30 +373,38 @@ app.post('/api/bookings', async (req, res) => {
         }
 
         // 3. WHATSAPP & SMS TO THE GUEST (Twilio)
-        if (phone && process.env.TWILIO_PHONE_NUMBER) {
+        if (phone) {
             const formattedPhone = phone.startsWith('+') ? phone : `+91${phone.trim()}`;
 
-            // Try sending WhatsApp first
-            try {
-                await twilioClient.messages.create({
-                    from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
-                    to: `whatsapp:${formattedPhone}`,
-                    body: `Hello ${firstName}! 🏠 Your StayGuwahati booking request for *${formattedPropertyName}* (${formattedDates}) has been received. Total: ₹${totalPrice || 0}. We will contact you shortly!`
-                });
-                console.log(`[BOOKING] WhatsApp sent to: ${formattedPhone}`);
-            } catch (whatsappErr) {
-                console.warn("[BOOKING] WhatsApp failed, attempting SMS fallback:", whatsappErr.message);
+            // Send WhatsApp if TWILIO_WHATSAPP_NUMBER is set
+            if (process.env.TWILIO_WHATSAPP_NUMBER) {
+                try {
+                    const waSender = process.env.TWILIO_WHATSAPP_NUMBER.trim().startsWith('+') 
+                        ? process.env.TWILIO_WHATSAPP_NUMBER.trim() 
+                        : `+${process.env.TWILIO_WHATSAPP_NUMBER.trim()}`;
 
-                // Fallback to standard SMS if WhatsApp fails
+                    await twilioClient.messages.create({
+                        from: `whatsapp:${waSender}`,
+                        to: `whatsapp:${formattedPhone}`,
+                        body: `Hello ${firstName}! 🏠 Your StayGuwahati booking request for *${formattedPropertyName}* (${formattedDates}) has been received. Total: ₹${totalPrice || 0}. We will contact you shortly!`
+                    });
+                    console.log(`[BOOKING] WhatsApp sent to: ${formattedPhone}`);
+                } catch (whatsappErr) {
+                    console.error("[BOOKING] WhatsApp error:", whatsappErr.message);
+                }
+            }
+
+            // Send SMS if TWILIO_PHONE_NUMBER is set
+            if (process.env.TWILIO_PHONE_NUMBER) {
                 try {
                     await twilioClient.messages.create({
-                        from: process.env.TWILIO_PHONE_NUMBER,
+                        from: process.env.TWILIO_PHONE_NUMBER.trim(),
                         to: formattedPhone,
                         body: `Hello ${firstName}! Your StayGuwahati booking request for ${formattedPropertyName} (${formattedDates}) is received. Total: RS ${totalPrice || 0}.`
                     });
-                    console.log(`[BOOKING] Fallback SMS sent to: ${formattedPhone}`);
+                    console.log(`[BOOKING] SMS sent to: ${formattedPhone}`);
                 } catch (smsErr) {
-                    console.error("[BOOKING] SMS dispatch failed:", smsErr.message);
+                    console.error("[BOOKING] SMS error:", smsErr.message);
                 }
             }
         }
@@ -407,6 +415,7 @@ app.post('/api/bookings', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error during booking." });
     }
 });
+
 app.post('/api/messages/send', async (req, res) => {
     try {
         const { recipientPhone, message, senderName, propertyTitle, guestName } = req.body;
@@ -429,8 +438,8 @@ app.post('/api/messages/send', async (req, res) => {
             try {
                 const twilioResponse = await twilioClient.messages.create({
                     body: `[StayGuwahati] Message from ${senderName} regarding ${propertyTitle}: "${message}"`,
-                    from: process.env.TWILIO_PHONE_NUMBER,
-                    to: recipientPhone
+                    from: process.env.TWILIO_PHONE_NUMBER.trim(),
+                    to: recipientPhone.startsWith('+') ? recipientPhone : `+91${recipientPhone.trim()}`
                 });
                 twilioSid = twilioResponse.sid;
             } catch (twilioErr) {
