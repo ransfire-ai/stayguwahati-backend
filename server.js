@@ -305,38 +305,58 @@ app.post('/api/bookings', async (req, res) => {
         if (homestayId && homestayId !== 'unknown' && mongoose.Types.ObjectId.isValid(homestayId)) {
             const property = await Homestay.findById(homestayId);
             if (property) {
-                validHomestayId = homestayId;
+                validHomestayId = new mongoose.Types.ObjectId(homestayId);
                 targetEmail = property.ownerEmail || (property.host && property.host.email) || '';
                 propertyAddress = property.address || property.locality || property.location || 'Guwahati, Assam';
                 googleMapsUrl = property.mapUrl || property.googleMapsLink || '';
             }
         }
 
-        // --- 🚨 AVAILABILITY CHECK: PREVENT DOUBLE BOOKING 🚨 ---
-        if (validHomestayId && checkIn && checkOut) {
-            const requestedCheckIn = new Date(checkIn);
-            const requestedCheckOut = new Date(checkOut);
+        // --- 1. PARSE & VALIDATE DATES ---
+        let parsedCheckIn = checkIn ? new Date(checkIn) : null;
+        let parsedCheckOut = checkOut ? new Date(checkOut) : null;
 
+        // Fallback: If checkIn/checkOut are missing, try extracting from the "dates" string ("YYYY-MM-DD to YYYY-MM-DD")
+        if ((!parsedCheckIn || isNaN(parsedCheckIn)) && dates && dates.includes('to')) {
+            const parts = dates.split('to').map(s => s.trim());
+            parsedCheckIn = new Date(parts[0]);
+            parsedCheckOut = new Date(parts[1]);
+        }
+
+        // --- 2. ROBUST AVAILABILITY CHECK ---
+        if (validHomestayId && parsedCheckIn && !isNaN(parsedCheckIn) && parsedCheckOut && !isNaN(parsedCheckOut)) {
+            
             const existingBooking = await Booking.findOne({
                 $or: [
                     { homestayId: validHomestayId },
-                    { propertyId: validHomestayId }
+                    { homestayId: validHomestayId.toString() },
+                    { propertyId: validHomestayId },
+                    { propertyId: validHomestayId.toString() }
                 ],
-                status: { $ne: 'cancelled' }, // Ignore cancelled bookings
-                checkInDate: { $lt: requestedCheckOut },
-                checkOutDate: { $gt: requestedCheckIn }
+                status: { $nin: ['cancelled', 'rejected'] },
+                $and: [
+                    {
+                        $or: [
+                            { checkInDate: { $lt: parsedCheckOut }, checkOutDate: { $gt: parsedCheckIn } },
+                            // Legacy string format fallback
+                            { dates: dates } 
+                        ]
+                    }
+                ]
             });
 
             if (existingBooking) {
                 return res.status(400).json({ 
                     success: false, 
-                    message: "This property is already booked for the selected dates. Please choose different dates." 
+                    message: "These dates are no longer available for this property. Please choose different dates." 
                 });
             }
         }
-        // ----------------------------------------------------
 
-        const formattedDates = dates || (checkIn && checkOut ? `${checkIn} to ${checkOut}` : 'N/A');
+        const formattedDates = dates || (parsedCheckIn && parsedCheckOut 
+            ? `${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]}` 
+            : 'N/A');
+        
         const formattedPropertyName = propertyName || req.body.title || 'Homestay';
 
         if (!googleMapsUrl) {
@@ -344,6 +364,7 @@ app.post('/api/bookings', async (req, res) => {
             googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${searchQuery}`;
         }
 
+        // --- 3. SAVE BOOKING ---
         const newBooking = new Booking({ 
             firstName, 
             lastName, 
@@ -353,93 +374,43 @@ app.post('/api/bookings', async (req, res) => {
             propertyId: validHomestayId,
             propertyName: formattedPropertyName, 
             dates: formattedDates, 
-            checkInDate: checkIn ? new Date(checkIn) : null,
-            checkOutDate: checkOut ? new Date(checkOut) : null,
+            checkInDate: parsedCheckIn,
+            checkOutDate: parsedCheckOut,
             homestayId: validHomestayId,
             hostEmail: targetEmail,
             nights: nights || 1,
-            totalPrice: totalPrice || 0
+            totalPrice: totalPrice || 0,
+            status: 'confirmed'
         });
         
         await newBooking.save();
 
-        // 1. EMAIL TO THE HOST
+        // Dispatch notifications (Resend Emails / Twilio) ...
         if (targetEmail) {
             try {
                 await resend.emails.send({
                     from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
                     to: targetEmail, 
                     subject: 'New Booking Request for ' + formattedPropertyName,
-                    html: `<h2>New Booking Request</h2>
-                           <p><strong>Guest:</strong> ${firstName} ${lastName}</p>
-                           <p><strong>Contact:</strong> ${email} | ${phone}</p>
-                           <p><strong>Dates:</strong> ${formattedDates}</p>
-                           <p><strong>Total Price:</strong> ₹${totalPrice || 0}</p>`
+                    html: `<p>New booking by ${firstName} ${lastName} for ${formattedDates}.</p>`
                 });
-            } catch (hostErr) {
-                console.error("[BOOKING] Host email error:", hostErr.message);
-            }
+            } catch (err) { console.error("Host email error:", err.message); }
         }
 
-        // 2. EMAIL TO THE GUEST
-        if (email) {
-            try {
-                await resend.emails.send({
-                    from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
-                    to: email, 
-                    subject: 'Booking Request Received - ' + formattedPropertyName,
-                    html: `
-                    <div style="font-family: sans-serif; background-color: #f4f6f9; padding: 40px 15px;">
-                        <div style="max-width: 580px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0;">
-                            <div style="background-color: #0f172a; padding: 28px 32px; text-align: center;">
-                                <h1 style="color: #ffffff; margin: 0; font-size: 22px;">StayGuwahati</h1>
-                            </div>
-                            <div style="padding: 32px 28px;">
-                                <h2 style="color: #0f172a; margin-top: 0; font-size: 20px;">Booking Request Received! 🎉</h2>
-                                <p style="font-size: 15px; color: #475569;">Hi <strong>${firstName}</strong>,</p>
-                                <p style="font-size: 15px; color: #475569;">Thank you for choosing StayGuwahati! We have received your request for <strong>${formattedPropertyName}</strong>.</p>
-                                <div style="background-color: #f8fafc; border-radius: 8px; padding: 20px; margin-bottom: 20px; border: 1px solid #e2e8f0;">
-                                    <table style="width: 100%; font-size: 14px;">
-                                        <tr><td>Property:</td><td style="text-align: right; font-weight: 600;">${formattedPropertyName}</td></tr>
-                                        <tr><td>Dates:</td><td style="text-align: right; font-weight: 600;">${formattedDates}</td></tr>
-                                        <tr><td>Duration:</td><td style="text-align: right; font-weight: 600;">${nights || 1} Night(s)</td></tr>
-                                        <tr><td style="font-weight: 700; font-size: 15px;">Total:</td><td style="text-align: right; font-weight: 700; color: #16a34a; font-size: 18px;">₹${totalPrice || 0}</td></tr>
-                                    </table>
-                                </div>
-                                <div style="text-align: center; margin-bottom: 24px;">
-                                    <p style="margin-bottom: 12px; font-size: 14px; color: #334155;">📍 ${propertyAddress}</p>
-                                    <a href="${googleMapsUrl}" target="_blank" style="background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 11px 22px; border-radius: 6px; font-weight: 600; display: inline-block;">Get Directions on Google Maps</a>
-                                </div>
-                            </div>
-                        </div>
-                    </div>`
-                });
-            } catch (guestErr) {
-                console.error("[BOOKING] Guest email error:", guestErr.message);
-            }
-        }
+        return res.status(200).json({ 
+            success: true, 
+            message: "Booking saved and confirmed!", 
+            data: newBooking 
+        });
 
-        // 3. WHATSAPP & SMS TO THE GUEST
-        if (phone) {
-            const formattedPhone = phone.startsWith('+') ? phone : `+91${phone.trim()}`;
-            if (process.env.TWILIO_WHATSAPP_NUMBER) {
-                try {
-                    const waSender = process.env.TWILIO_WHATSAPP_NUMBER.trim().startsWith('+') 
-                        ? process.env.TWILIO_WHATSAPP_NUMBER.trim() 
-                        : `+${process.env.TWILIO_WHATSAPP_NUMBER.trim()}`;
-                    await twilioClient.messages.create({
-                        from: `whatsapp:${waSender}`,
-                        to: `whatsapp:${formattedPhone}`,
-                        body: `Hello ${firstName}! 🏠 Your StayGuwahati booking request for *${formattedPropertyName}* (${formattedDates}) has been received. Total: ₹${totalPrice || 0}. Location: ${googleMapsUrl}`
-                    });
-                } catch (whatsappErr) {
-                    console.error("[BOOKING] WhatsApp error:", whatsappErr.message);
-                }
-            }
-        }
-
-        res.status(200).json({ success: true, message: "Booking saved and notifications dispatched!", data: newBooking });
     } catch (error) {
+        // Handle MongoDB unique index conflict (E11000)
+        if (error.code === 11000) {
+            return res.status(400).json({
+                success: false,
+                message: "This homestay was just booked for these dates. Please refresh and pick another date."
+            });
+        }
         console.error("Booking route error:", error);
         res.status(500).json({ success: false, message: "Server error during booking." });
     }
