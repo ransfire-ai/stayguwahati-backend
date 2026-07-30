@@ -404,8 +404,9 @@ app.post('/api/bookings', async (req, res) => {
         const emailPromises = [];
 
         // --- EMAIL 1: TO GUEST / CUSTOMER ---
+// --- EMAIL 1: TO GUEST / CUSTOMER ---
 if (email) {
-    // 1. Bulletproof Image Extractor (Handles strings, objects, and arrays)
+    // 1. Bulletproof Image Extractor (Handles Strings, Objects, Arrays, & Base64)
     let rawImage = null;
     if (Array.isArray(property.images) && property.images.length > 0) {
         rawImage = property.images[0];
@@ -415,7 +416,7 @@ if (email) {
         rawImage = property.imageUrl || property.image || property.coverImage;
     }
 
-    // Extract string if image is stored as an object { url: '...' } or { path: '...' }
+    // Extract string if image is stored as an object { url: '...' }
     if (typeof rawImage === 'object' && rawImage !== null) {
         rawImage = rawImage.url || rawImage.path || rawImage.secure_url || '';
     }
@@ -425,11 +426,16 @@ if (email) {
 
     if (typeof rawImage === 'string' && rawImage.trim() !== '') {
         const trimmedImg = rawImage.trim();
-        if (trimmedImg.startsWith('http://') || trimmedImg.startsWith('https://')) {
-            // Force HTTPS for email client security policies
+
+        if (trimmedImg.startsWith('data:image/')) {
+            // Gmail & Outlook block base64 'data:image/' URIs for security.
+            // Using clean fallback image so email clients don't show a broken image box.
+            console.log("⚠️ Base64 image detected in DB. Using fallback web image for email compatibility.");
+        } else if (trimmedImg.startsWith('http://') || trimmedImg.startsWith('https://')) {
+            // Force HTTPS for email security compliance
             propertyImageUrl = trimmedImg.replace(/^http:\/\//i, 'https://');
         } else {
-            // Force HTTPS base URL for Render deployment
+            // Relative path (e.g., /uploads/1700000.png)
             const backendHost = process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com';
             const cleanHost = backendHost.replace(/\/$/, '').replace(/^http:\/\//i, 'https://');
             const cleanPath = trimmedImg.startsWith('/') ? trimmedImg : `/${trimmedImg}`;
