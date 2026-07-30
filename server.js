@@ -395,8 +395,8 @@ app.post('/api/bookings', async (req, res) => {
             hostEmail: targetEmail,
             nights: nights || 1,
             totalPrice: totalPrice || 0,
-            status: 'confirmed'
-        });
+            status: req.body.status || 'Confirmed' // Standardize to capitalized 'Confirmed'
+});
         
         await newBooking.save();
 
