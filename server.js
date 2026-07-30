@@ -395,24 +395,65 @@ app.post('/api/bookings', async (req, res) => {
             hostEmail: targetEmail,
             nights: nights || 1,
             totalPrice: totalPrice || 0,
-            status: req.body.status || 'Confirmed' // Standardize to capitalized 'Confirmed'
-});
+            status: req.body.status || 'Confirmed'
+        });
         
         await newBooking.save();
 
-        // 5. Send Host Email Notification
+        // 5. Send Dual Email Notifications (Guest + Host)
+        const emailPromises = [];
+
+        // --- EMAIL 1: TO GUEST / CUSTOMER ---
+        if (email) {
+            emailPromises.push(
+                resend.emails.send({
+                    from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
+                    to: email.toLowerCase(),
+                    subject: `Booking Confirmed: ${formattedPropertyName}`,
+                    html: `
+                        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
+                            <h2 style="color: #0d9488;">Booking Confirmed!</h2>
+                            <p>Hi ${firstName} ${lastName},</p>
+                            <p>Your booking for <strong>${formattedPropertyName}</strong> has been successfully confirmed.</p>
+                            <div style="background-color: #f8fafc; padding: 16px; border-radius: 8px; margin: 20px 0;">
+                                <p style="margin: 4px 0;"><strong>Dates:</strong> ${formattedDates}</p>
+                                <p style="margin: 4px 0;"><strong>Nights:</strong> ${nights || 1}</p>
+                                <p style="margin: 4px 0;"><strong>Total Amount:</strong> ₹${totalPrice || 0}</p>
+                                <p style="margin: 4px 0;"><strong>Address:</strong> ${propertyAddress}</p>
+                            </div>
+                            <p><a href="${googleMapsUrl}" style="background-color: #0d9488; color: white; padding: 10px 15px; text-decoration: none; border-radius: 5px;">View Location on Google Maps</a></p>
+                        </div>
+                    `
+                }).catch(err => console.error("Guest email dispatch error:", err.message))
+            );
+        }
+
+        // --- EMAIL 2: TO HOST / ADMIN ---
         if (targetEmail) {
-            try {
-                await resend.emails.send({
+            emailPromises.push(
+                resend.emails.send({
                     from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
                     to: targetEmail, 
                     subject: 'New Booking Request for ' + formattedPropertyName,
-                    html: `<p>New booking by ${firstName} ${lastName} (${email}, ${phone}) for ${formattedDates}.</p>`
-                });
-            } catch (err) { 
-                console.error("Host email dispatch warning:", err.message); 
-            }
+                    html: `
+                        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
+                            <h2>New Booking Received</h2>
+                            <p>You have received a new booking for <strong>${formattedPropertyName}</strong>.</p>
+                            <ul>
+                                <li><strong>Guest Name:</strong> ${firstName} ${lastName}</li>
+                                <li><strong>Guest Email:</strong> ${email}</li>
+                                <li><strong>Guest Phone:</strong> ${phone}</li>
+                                <li><strong>Dates:</strong> ${formattedDates}</li>
+                                <li><strong>Total Amount:</strong> ₹${totalPrice || 0}</li>
+                            </ul>
+                        </div>
+                    `
+                }).catch(err => console.error("Host email dispatch error:", err.message))
+            );
         }
+
+        // Wait for both email attempts to execute
+        await Promise.all(emailPromises);
 
         return res.status(200).json({ 
             success: true, 
@@ -421,13 +462,11 @@ app.post('/api/bookings', async (req, res) => {
         });
 
     } catch (error) {
-        // Handle Mongoose Schema Validation Errors (e.g. missing required fields)
         if (error.name === 'ValidationError') {
             console.error("Mongoose Validation Error:", error.message);
             return res.status(400).json({ success: false, message: error.message });
         }
 
-        // Handle MongoDB unique index conflict
         if (error.code === 11000) {
             return res.status(400).json({
                 success: false,
@@ -437,6 +476,8 @@ app.post('/api/bookings', async (req, res) => {
 
         console.error("Booking route unexpected error:", error);
         res.status(500).json({ success: false, message: error.message || "Server error during booking." });
+    }
+});
     }
 });app.post('/api/messages/send', async (req, res) => {
     try {
