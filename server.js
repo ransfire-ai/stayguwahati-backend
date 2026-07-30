@@ -295,88 +295,103 @@ app.get('/api/bookings', async (req, res) => {
 
 app.post('/api/bookings', async (req, res) => {
     try {
-        const { firstName, lastName, email, phone, propertyName, dates, homestayId, checkIn, checkOut, nights, totalPrice } = req.body;
+        const { 
+            firstName, 
+            lastName, 
+            email, 
+            phone, 
+            propertyName, 
+            dates, 
+            homestayId, 
+            checkIn, 
+            checkOut, 
+            nights, 
+            totalPrice 
+        } = req.body;
 
-        let targetEmail = '';
-        let validHomestayId = null;
-        let propertyAddress = 'Guwahati, Assam';
-        let googleMapsUrl = '';
-
-        if (homestayId && homestayId !== 'unknown' && mongoose.Types.ObjectId.isValid(homestayId)) {
-            const property = await Homestay.findById(homestayId);
-            if (property) {
-                validHomestayId = new mongoose.Types.ObjectId(homestayId);
-                targetEmail = property.ownerEmail || (property.host && property.host.email) || '';
-                propertyAddress = property.address || property.locality || property.location || 'Guwahati, Assam';
-                googleMapsUrl = property.mapUrl || property.googleMapsLink || '';
-            }
+        // 1. Mandatory Input Validation
+        if (!firstName || !lastName || !email || !phone) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "First name, last name, email, and phone number are required." 
+            });
         }
 
-        // --- 1. PARSE & VALIDATE DATES ---
+        if (!homestayId || homestayId === 'unknown' || !mongoose.Types.ObjectId.isValid(homestayId)) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "A valid Homestay ID is required to complete a booking." 
+            });
+        }
+
+        const validHomestayId = new mongoose.Types.ObjectId(homestayId);
+
+        // Fetch property details
+        const property = await Homestay.findById(validHomestayId);
+        if (!property) {
+            return res.status(444).json({ success: false, message: "Property not found." });
+        }
+
+        const targetEmail = property.ownerEmail || (property.host && property.host.email) || '';
+        const propertyAddress = property.address || property.locality || property.location || 'Guwahati, Assam';
+        let googleMapsUrl = property.mapUrl || property.googleMapsLink || '';
+
+        // 2. Parse & Validate Dates
         let parsedCheckIn = checkIn ? new Date(checkIn) : null;
         let parsedCheckOut = checkOut ? new Date(checkOut) : null;
 
-        // Fallback: If checkIn/checkOut are missing, try extracting from the "dates" string ("YYYY-MM-DD to YYYY-MM-DD")
         if ((!parsedCheckIn || isNaN(parsedCheckIn)) && dates && dates.includes('to')) {
             const parts = dates.split('to').map(s => s.trim());
             parsedCheckIn = new Date(parts[0]);
             parsedCheckOut = new Date(parts[1]);
         }
 
-        // --- 2. ROBUST AVAILABILITY CHECK ---
-        if (validHomestayId && parsedCheckIn && !isNaN(parsedCheckIn) && parsedCheckOut && !isNaN(parsedCheckOut)) {
-            
-            const existingBooking = await Booking.findOne({
-                $or: [
-                    { homestayId: validHomestayId },
-                    { homestayId: validHomestayId.toString() },
-                    { propertyId: validHomestayId },
-                    { propertyId: validHomestayId.toString() }
-                ],
-                status: { $nin: ['cancelled', 'rejected'] },
-                $and: [
-                    {
-                        $or: [
-                            { checkInDate: { $lt: parsedCheckOut }, checkOutDate: { $gt: parsedCheckIn } },
-                            // Legacy string format fallback
-                            { dates: dates } 
-                        ]
-                    }
-                ]
+        if (!parsedCheckIn || isNaN(parsedCheckIn) || !parsedCheckOut || isNaN(parsedCheckOut)) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Valid check-in and check-out dates are required." 
             });
-
-            if (existingBooking) {
-                return res.status(400).json({ 
-                    success: false, 
-                    message: "These dates are no longer available for this property. Please choose different dates." 
-                });
-            }
         }
 
-        const formattedDates = dates || (parsedCheckIn && parsedCheckOut 
-            ? `${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]}` 
-            : 'N/A');
-        
-        const formattedPropertyName = propertyName || req.body.title || 'Homestay';
+        // 3. Date Overlap Availability Check
+        const existingBooking = await Booking.findOne({
+            $or: [
+                { homestayId: validHomestayId },
+                { propertyId: validHomestayId }
+            ],
+            status: { $nin: ['cancelled', 'rejected'] },
+            checkInDate: { $lt: parsedCheckOut }, 
+            checkOutDate: { $gt: parsedCheckIn }
+        });
+
+        if (existingBooking) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "These dates are no longer available for this property. Please choose different dates." 
+            });
+        }
+
+        const formattedDates = dates || `${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]}`;
+        const formattedPropertyName = propertyName || property.title || 'Homestay';
 
         if (!googleMapsUrl) {
             const searchQuery = encodeURIComponent(`${formattedPropertyName} ${propertyAddress}`);
             googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${searchQuery}`;
         }
 
-        // --- 3. SAVE BOOKING ---
+        // 4. Create and Save Booking
         const newBooking = new Booking({ 
             firstName, 
             lastName, 
-            email, 
+            email: email.toLowerCase(), 
             phone,
             userId: req.body.userId || null,
             propertyId: validHomestayId,
+            homestayId: validHomestayId,
             propertyName: formattedPropertyName, 
             dates: formattedDates, 
             checkInDate: parsedCheckIn,
             checkOutDate: parsedCheckOut,
-            homestayId: validHomestayId,
             hostEmail: targetEmail,
             nights: nights || 1,
             totalPrice: totalPrice || 0,
@@ -385,16 +400,18 @@ app.post('/api/bookings', async (req, res) => {
         
         await newBooking.save();
 
-        // Dispatch notifications (Resend Emails / Twilio) ...
+        // 5. Send Host Email Notification
         if (targetEmail) {
             try {
                 await resend.emails.send({
                     from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
                     to: targetEmail, 
                     subject: 'New Booking Request for ' + formattedPropertyName,
-                    html: `<p>New booking by ${firstName} ${lastName} for ${formattedDates}.</p>`
+                    html: `<p>New booking by ${firstName} ${lastName} (${email}, ${phone}) for ${formattedDates}.</p>`
                 });
-            } catch (err) { console.error("Host email error:", err.message); }
+            } catch (err) { 
+                console.error("Host email dispatch warning:", err.message); 
+            }
         }
 
         return res.status(200).json({ 
@@ -404,18 +421,24 @@ app.post('/api/bookings', async (req, res) => {
         });
 
     } catch (error) {
-        // Handle MongoDB unique index conflict (E11000)
+        // Handle Mongoose Schema Validation Errors (e.g. missing required fields)
+        if (error.name === 'ValidationError') {
+            console.error("Mongoose Validation Error:", error.message);
+            return res.status(400).json({ success: false, message: error.message });
+        }
+
+        // Handle MongoDB unique index conflict
         if (error.code === 11000) {
             return res.status(400).json({
                 success: false,
-                message: "This homestay was just booked for these dates. Please refresh and pick another date."
+                message: "This homestay was just booked for these dates. Please pick another date."
             });
         }
-        console.error("Booking route error:", error);
-        res.status(500).json({ success: false, message: "Server error during booking." });
+
+        console.error("Booking route unexpected error:", error);
+        res.status(500).json({ success: false, message: error.message || "Server error during booking." });
     }
-});
-app.post('/api/messages/send', async (req, res) => {
+});app.post('/api/messages/send', async (req, res) => {
     try {
         const { recipientPhone, message, senderName, propertyTitle, guestName } = req.body;
 
