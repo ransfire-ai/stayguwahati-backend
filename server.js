@@ -452,7 +452,6 @@ app.post('/api/bookings', async (req, res) => {
             );
         }
 
-        // Wait for both email attempts to execute
         await Promise.all(emailPromises);
 
         return res.status(200).json({ 
@@ -478,8 +477,9 @@ app.post('/api/bookings', async (req, res) => {
         res.status(500).json({ success: false, message: error.message || "Server error during booking." });
     }
 });
-    }
-});app.post('/api/messages/send', async (req, res) => {
+
+// 4.5 Messages Route
+app.post('/api/messages/send', async (req, res) => {
     try {
         const { recipientPhone, message, senderName, propertyTitle, guestName } = req.body;
 
