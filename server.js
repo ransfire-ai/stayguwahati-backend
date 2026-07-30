@@ -404,147 +404,143 @@ app.post('/api/bookings', async (req, res) => {
         const emailPromises = [];
 
         // --- EMAIL 1: TO GUEST / CUSTOMER ---
-// --- EMAIL 1: TO GUEST / CUSTOMER ---
-if (email) {
-    // 1. Bulletproof Image Extractor (Handles Strings, Objects, Arrays, & Base64)
-    let rawImage = null;
-    if (Array.isArray(property.images) && property.images.length > 0) {
-        rawImage = property.images[0];
-    } else if (Array.isArray(property.photos) && property.photos.length > 0) {
-        rawImage = property.photos[0];
-    } else {
-        rawImage = property.imageUrl || property.image || property.coverImage;
-    }
-
-    // Extract string if image is stored as an object { url: '...' }
-    if (typeof rawImage === 'object' && rawImage !== null) {
-        rawImage = rawImage.url || rawImage.path || rawImage.secure_url || '';
-    }
-
-    // High-resolution fallback default image
-    let propertyImageUrl = 'https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?auto=format&fit=crop&w=600&q=80';
-
-    if (typeof rawImage === 'string' && rawImage.trim() !== '') {
-        const trimmedImg = rawImage.trim();
-
-        if (trimmedImg.startsWith('data:image/')) {
-            // Gmail & Outlook block base64 'data:image/' URIs for security.
-            // Using clean fallback image so email clients don't show a broken image box.
-            console.log("⚠️ Base64 image detected in DB. Using fallback web image for email compatibility.");
-        } else if (trimmedImg.startsWith('http://') || trimmedImg.startsWith('https://')) {
-            // Force HTTPS for email security compliance
-            propertyImageUrl = trimmedImg.replace(/^http:\/\//i, 'https://');
-        } else {
-            // Relative path (e.g., /uploads/1700000.png)
+        if (email) {
             const backendHost = process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com';
             const cleanHost = backendHost.replace(/\/$/, '').replace(/^http:\/\//i, 'https://');
-            const cleanPath = trimmedImg.startsWith('/') ? trimmedImg : `/${trimmedImg}`;
-            propertyImageUrl = `${cleanHost}${cleanPath}`;
-        }
-    }
 
-    console.log("📸 Final Image URL generated for Email:", propertyImageUrl);
-    // 2. Static Map URL
-    const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${encodeURIComponent(propertyAddress)}&zoom=14&size=600x200&maptype=roadmap&markers=color:red%7CLabel:S%7C${encodeURIComponent(propertyAddress)}&key=${process.env.GOOGLE_MAPS_API_KEY || ''}`;
+            // Default image endpoint route
+            let propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`;
 
-    emailPromises.push(
-        resend.emails.send({
-            from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
-            to: email.toLowerCase(),
-            subject: `Booking Confirmed: ${formattedPropertyName}`,
-            html: `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            </head>
-            <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; margin: 0; padding: 20px 10px;">
-                <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
-                    
-                    <!-- Header Banner -->
-                    <div style="background-color: #0d9488; padding: 20px 24px; text-align: center;">
-                        <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">StayGuwahati</h1>
-                    </div>
+            let rawImage = null;
+            if (Array.isArray(property.images) && property.images.length > 0) {
+                rawImage = property.images[0];
+            } else if (Array.isArray(property.photos) && property.photos.length > 0) {
+                rawImage = property.photos[0];
+            } else {
+                rawImage = property.imageUrl || property.image || property.coverImage;
+            }
 
-                    <!-- Main Email Content -->
-                    <div style="padding: 28px 24px;">
-                        
-                        <!-- Status Pill -->
-                        <div style="display: inline-block; background-color: #ccfbf1; color: #0f766e; padding: 6px 14px; border-radius: 20px; font-weight: 600; font-size: 13px; margin-bottom: 12px;">
-                            ✓ Booking Confirmed
-                        </div>
-                        
-                        <h2 style="color: #0f172a; margin: 0 0 6px 0; font-size: 22px;">Hi ${firstName} ${lastName},</h2>
-                        <p style="color: #475569; margin: 0 0 20px 0; font-size: 15px; line-height: 1.5;">
-                            Your reservation for <strong>${formattedPropertyName}</strong> is all set!
-                        </p>
+            if (typeof rawImage === 'object' && rawImage !== null) {
+                rawImage = rawImage.url || rawImage.path || rawImage.secure_url || '';
+            }
 
-                        <!-- Property Photo Card -->
-                        <div style="border-radius: 10px; overflow: hidden; margin-bottom: 20px; border: 1px solid #e2e8f0; background-color: #f8fafc;">
-                            <img src="${propertyImageUrl}" 
-                                 alt="${formattedPropertyName}" 
-                                 style="width: 100%; height: 220px; object-fit: cover; display: block; border: 0;" />
-                            <div style="padding: 12px 16px; background-color: #ffffff; border-top: 1px solid #f1f5f9;">
-                                <h3 style="margin: 0; font-size: 17px; color: #0f172a; font-weight: 700;">${formattedPropertyName}</h3>
-                                <p style="margin: 4px 0 0 0; font-size: 13px; color: #64748b;">📍 ${propertyAddress}</p>
+            if (typeof rawImage === 'string' && rawImage.trim() !== '') {
+                const trimmedImg = rawImage.trim();
+
+                if (trimmedImg.startsWith('data:image/')) {
+                    // Direct base64 strings to backend image decoder route
+                    propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`;
+                } else if (trimmedImg.startsWith('http://') || trimmedImg.startsWith('https://')) {
+                    propertyImageUrl = trimmedImg.replace(/^http:\/\//i, 'https://');
+                } else {
+                    const cleanPath = trimmedImg.startsWith('/') ? trimmedImg : `/${trimmedImg}`;
+                    propertyImageUrl = `${cleanHost}${cleanPath}`;
+                }
+            }
+
+            console.log("📸 Final Image URL generated for Email:", propertyImageUrl);
+
+            // Static Map URL
+            const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${encodeURIComponent(propertyAddress)}&zoom=14&size=600x200&maptype=roadmap&markers=color:red%7CLabel:S%7C${encodeURIComponent(propertyAddress)}&key=${process.env.GOOGLE_MAPS_API_KEY || ''}`;
+
+            emailPromises.push(
+                resend.emails.send({
+                    from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
+                    to: email.toLowerCase(),
+                    subject: `Booking Confirmed: ${formattedPropertyName}`,
+                    html: `
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="utf-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    </head>
+                    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; margin: 0; padding: 20px 10px;">
+                        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+                            
+                            <!-- Header Banner -->
+                            <div style="background-color: #0d9488; padding: 20px 24px; text-align: center;">
+                                <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">StayGuwahati</h1>
                             </div>
-                        </div>
 
-                        <!-- Booking Details Table -->
-                        <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px; margin-bottom: 20px;">
-                            <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #334155;">
-                                <tr>
-                                    <td style="padding: 6px 0; font-weight: 600; color: #64748b; width: 35%;">Dates</td>
-                                    <td style="padding: 6px 0; font-weight: 600; color: #0f172a;">${formattedDates}</td>
-                                </tr>
-                                <tr>
-                                    <td style="padding: 6px 0; font-weight: 600; color: #64748b;">Nights</td>
-                                    <td style="padding: 6px 0; font-weight: 500;">${nights || 1} ${nights === 1 ? 'night' : 'nights'}</td>
-                                </tr>
-                                <tr>
-                                    <td style="padding: 6px 0; font-weight: 600; color: #64748b;">Total Amount</td>
-                                    <td style="padding: 6px 0; font-weight: 700; color: #0d9488; font-size: 16px;">₹${totalPrice || 0}</td>
-                                </tr>
-                            </table>
-                        </div>
-
-                        <!-- Location & Map Block -->
-                        <div style="border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; margin-bottom: 24px; background-color: #f1f5f9;">
-                            <a href="${googleMapsUrl}" target="_blank" style="text-decoration: none; display: block;">
-                                <img src="${process.env.GOOGLE_MAPS_API_KEY ? staticMapUrl : 'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?auto=format&fit=crop&w=600&h=180&q=80'}" 
-                                     alt="Property Map Location" 
-                                     style="width: 100%; max-height: 180px; object-fit: cover; border: 0; display: block;" />
-                                <div style="padding: 12px; background-color: #ffffff; color: #0d9488; font-weight: 600; font-size: 14px; border-top: 1px solid #e2e8f0; text-align: center;">
-                                    📍 Click to Open Google Maps Directions
+                            <!-- Main Email Content -->
+                            <div style="padding: 28px 24px;">
+                                
+                                <!-- Status Pill -->
+                                <div style="display: inline-block; background-color: #ccfbf1; color: #0f766e; padding: 6px 14px; border-radius: 20px; font-weight: 600; font-size: 13px; margin-bottom: 12px;">
+                                    ✓ Booking Confirmed
                                 </div>
-                            </a>
+                                
+                                <h2 style="color: #0f172a; margin: 0 0 6px 0; font-size: 22px;">Hi ${firstName} ${lastName},</h2>
+                                <p style="color: #475569; margin: 0 0 20px 0; font-size: 15px; line-height: 1.5;">
+                                    Your reservation for <strong>${formattedPropertyName}</strong> is all set!
+                                </p>
+
+                                <!-- Property Photo Card -->
+                                <div style="border-radius: 10px; overflow: hidden; margin-bottom: 20px; border: 1px solid #e2e8f0; background-color: #f8fafc;">
+                                    <img src="${propertyImageUrl}" 
+                                         alt="${formattedPropertyName}" 
+                                         style="width: 100%; height: 220px; object-fit: cover; display: block; border: 0;" />
+                                    <div style="padding: 12px 16px; background-color: #ffffff; border-top: 1px solid #f1f5f9;">
+                                        <h3 style="margin: 0; font-size: 17px; color: #0f172a; font-weight: 700;">${formattedPropertyName}</h3>
+                                        <p style="margin: 4px 0 0 0; font-size: 13px; color: #64748b;">📍 ${propertyAddress}</p>
+                                    </div>
+                                </div>
+
+                                <!-- Booking Details Table -->
+                                <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px; margin-bottom: 20px;">
+                                    <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #334155;">
+                                        <tr>
+                                            <td style="padding: 6px 0; font-weight: 600; color: #64748b; width: 35%;">Dates</td>
+                                            <td style="padding: 6px 0; font-weight: 600; color: #0f172a;">${formattedDates}</td>
+                                        </tr>
+                                        <tr>
+                                            <td style="padding: 6px 0; font-weight: 600; color: #64748b;">Nights</td>
+                                            <td style="padding: 6px 0; font-weight: 500;">${nights || 1} ${nights === 1 ? 'night' : 'nights'}</td>
+                                        </tr>
+                                        <tr>
+                                            <td style="padding: 6px 0; font-weight: 600; color: #64748b;">Total Amount</td>
+                                            <td style="padding: 6px 0; font-weight: 700; color: #0d9488; font-size: 16px;">₹${totalPrice || 0}</td>
+                                        </tr>
+                                    </table>
+                                </div>
+
+                                <!-- Location & Map Block -->
+                                <div style="border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; margin-bottom: 24px; background-color: #f1f5f9;">
+                                    <a href="${googleMapsUrl}" target="_blank" style="text-decoration: none; display: block;">
+                                        <img src="${process.env.GOOGLE_MAPS_API_KEY ? staticMapUrl : 'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?auto=format&fit=crop&w=600&h=180&q=80'}" 
+                                             alt="Property Map Location" 
+                                             style="width: 100%; max-height: 180px; object-fit: cover; border: 0; display: block;" />
+                                        <div style="padding: 12px; background-color: #ffffff; color: #0d9488; font-weight: 600; font-size: 14px; border-top: 1px solid #e2e8f0; text-align: center;">
+                                            📍 Click to Open Google Maps Directions
+                                        </div>
+                                    </a>
+                                </div>
+
+                                <!-- CTA Button -->
+                                <div style="text-align: center; margin-bottom: 24px;">
+                                    <a href="${googleMapsUrl}" target="_blank" style="background-color: #0d9488; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 15px;">
+                                        Get Directions to Property
+                                    </a>
+                                </div>
+
+                                <p style="color: #94a3b8; font-size: 13px; line-height: 1.4; margin: 0; text-align: center;">
+                                    Need help? Reply to this email or reach us at <a href="mailto:support@stayguwahati.in" style="color: #0d9488; text-decoration: none;">support@stayguwahati.in</a>
+                                </p>
+                            </div>
+
+                            <!-- Footer -->
+                            <div style="background-color: #f8fafc; padding: 16px 24px; text-align: center; border-top: 1px solid #e2e8f0;">
+                                <p style="color: #94a3b8; font-size: 12px; margin: 0;">&copy; ${new Date().getFullYear()} StayGuwahati. All rights reserved.</p>
+                            </div>
+
                         </div>
-
-                        <!-- CTA Button -->
-                        <div style="text-align: center; margin-bottom: 24px;">
-                            <a href="${googleMapsUrl}" target="_blank" style="background-color: #0d9488; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 15px;">
-                                Get Directions to Property
-                            </a>
-                        </div>
-
-                        <p style="color: #94a3b8; font-size: 13px; line-height: 1.4; margin: 0; text-align: center;">
-                            Need help? Reply to this email or reach us at <a href="mailto:support@stayguwahati.in" style="color: #0d9488; text-decoration: none;">support@stayguwahati.in</a>
-                        </p>
-                    </div>
-
-                    <!-- Footer -->
-                    <div style="background-color: #f8fafc; padding: 16px 24px; text-align: center; border-top: 1px solid #e2e8f0;">
-                        <p style="color: #94a3b8; font-size: 12px; margin: 0;">&copy; ${new Date().getFullYear()} StayGuwahati. All rights reserved.</p>
-                    </div>
-
-                </div>
-            </body>
-            </html>
-            `
-        }).catch(err => console.error("Guest email dispatch error:", err.message))
-    );
-}
+                    </body>
+                    </html>
+                    `
+                }).catch(err => console.error("Guest email dispatch error:", err.message))
+            );
+        }
 
         // --- EMAIL 2: TO HOST / ADMIN ---
         if (targetEmail) {
@@ -699,6 +695,55 @@ app.get('/api/homestays/:id', async (req, res) => {
     } catch (error) {
         console.error("GET single homestay error:", error);
         res.status(500).json({ success: false, message: 'Server Error' });
+    }
+});
+
+// Dynamic Image Endpoint for Base64 & Email Compatibility
+app.get('/api/homestays/:id/image', async (req, res) => {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).send("Invalid ID format");
+        }
+
+        const homestay = await Homestay.findById(req.params.id);
+        if (!homestay) return res.status(404).send("Property not found");
+
+        let rawImage = (homestay.images && homestay.images[0]) || 
+                         (homestay.photos && homestay.photos[0]) || 
+                         homestay.imageUrl || homestay.image;
+
+        if (typeof rawImage === 'object' && rawImage !== null) {
+            rawImage = rawImage.url || rawImage.path || rawImage.secure_url || '';
+        }
+
+        if (typeof rawImage === 'string' && rawImage.startsWith('data:image/')) {
+            const matches = rawImage.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
+            if (matches) {
+                const contentType = matches[1];
+                const imageBuffer = Buffer.from(matches[2], 'base64');
+                res.setHeader('Content-Type', contentType);
+                res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
+                return res.send(imageBuffer);
+            }
+        }
+
+        // If it's a URL or relative path, redirect to it
+        if (typeof rawImage === 'string' && rawImage.trim().length > 0) {
+            const trimmed = rawImage.trim();
+            if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+                return res.redirect(trimmed);
+            }
+            const backendHost = process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com';
+            const cleanHost = backendHost.replace(/\/$/, '').replace(/^http:\/\//i, 'https://');
+            const cleanPath = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+            return res.redirect(`${cleanHost}${cleanPath}`);
+        }
+
+        // Default Villa / Homestay Fallback Image
+        res.redirect('https://images.unsplash.com/photo-1580587771525-78b9dba3b914?auto=format&fit=crop&w=600&q=80');
+    } catch (err) {
+        console.error("Image server error:", err);
+        res.status(500).send("Error loading image");
     }
 });
 
