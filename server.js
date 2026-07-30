@@ -405,25 +405,39 @@ app.post('/api/bookings', async (req, res) => {
 
         // --- EMAIL 1: TO GUEST / CUSTOMER ---
 if (email) {
-    // 1. Resolve Absolute Property Image URL
-    let propertyImageUrl = 'https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?auto=format&fit=crop&w=600&q=80'; // High-res fallback
-    const rawImage = (property.images && property.images[0]) || 
-                     (property.photos && property.photos[0]) || 
-                     property.imageUrl || 
-                     property.image;
+    // 1. Bulletproof Image Extractor (Handles strings, objects, and arrays)
+    let rawImage = null;
+    if (Array.isArray(property.images) && property.images.length > 0) {
+        rawImage = property.images[0];
+    } else if (Array.isArray(property.photos) && property.photos.length > 0) {
+        rawImage = property.photos[0];
+    } else {
+        rawImage = property.imageUrl || property.image || property.coverImage;
+    }
 
-    if (rawImage) {
-        if (rawImage.startsWith('http://') || rawImage.startsWith('https://')) {
-            propertyImageUrl = rawImage;
+    // Extract string if image is stored as an object { url: '...' } or { path: '...' }
+    if (typeof rawImage === 'object' && rawImage !== null) {
+        rawImage = rawImage.url || rawImage.path || rawImage.secure_url || '';
+    }
+
+    // High-resolution fallback default image
+    let propertyImageUrl = 'https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?auto=format&fit=crop&w=600&q=80';
+
+    if (typeof rawImage === 'string' && rawImage.trim() !== '') {
+        const trimmedImg = rawImage.trim();
+        if (trimmedImg.startsWith('http://') || trimmedImg.startsWith('https://')) {
+            // Force HTTPS for email client security policies
+            propertyImageUrl = trimmedImg.replace(/^http:\/\//i, 'https://');
         } else {
-            // Build absolute URL for locally uploaded images
-            const backendHost = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
-            const cleanHost = backendHost.replace(/\/$/, '');
-            const cleanPath = rawImage.startsWith('/') ? rawImage : `/${rawImage}`;
+            // Force HTTPS base URL for Render deployment
+            const backendHost = process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com';
+            const cleanHost = backendHost.replace(/\/$/, '').replace(/^http:\/\//i, 'https://');
+            const cleanPath = trimmedImg.startsWith('/') ? trimmedImg : `/${trimmedImg}`;
             propertyImageUrl = `${cleanHost}${cleanPath}`;
         }
     }
 
+    console.log("📸 Final Image URL generated for Email:", propertyImageUrl);
     // 2. Static Map URL
     const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${encodeURIComponent(propertyAddress)}&zoom=14&size=600x200&maptype=roadmap&markers=color:red%7CLabel:S%7C${encodeURIComponent(propertyAddress)}&key=${process.env.GOOGLE_MAPS_API_KEY || ''}`;
 
