@@ -529,7 +529,7 @@ app.post('/api/bookings', async (req, res) => {
                     subject: 'New Booking Request for ' + formattedPropertyName,
                     html: `
                         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
-                            print("<h2>New Booking Received</h2>")
+                            <h2>New Booking Received</h2>
                             <p>You have received a new booking for <strong>${formattedPropertyName}</strong>.</p>
                             <ul>
                                 <li><strong>Guest Name:</strong> ${firstName} ${lastName}</li>
@@ -593,7 +593,7 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
         await newMessage.save();
 
         let twilioSid = null;
-        if (recipientPhone && process.env.TWILIO_PHONE_NUMBER) {
+        if (recipientPhone && (process.env.TWILIO_WHATSAPP_NUMBER || process.env.TWILIO_PHONE_NUMBER)) {
             try {
                 // 1. Generate direct browser chat link
                 const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
@@ -607,8 +607,8 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
                     formattedPhone = `+91${formattedPhone.replace(/^0+/, '')}`;
                 }
 
-                // 3. Clean and sanitize Twilio FROM number (prevents duplicate 'whatsapp:' prefix error 63007)
-                let rawTwilioNumber = process.env.TWILIO_PHONE_NUMBER.trim();
+                // 3. Clean and sanitize Twilio FROM number (Prioritizes TWILIO_WHATSAPP_NUMBER, falls back to TWILIO_PHONE_NUMBER)
+                const rawTwilioNumber = (process.env.TWILIO_WHATSAPP_NUMBER || process.env.TWILIO_PHONE_NUMBER || '').trim();
                 let fromWhatsAppNumber = rawTwilioNumber.startsWith('whatsapp:')
                     ? rawTwilioNumber
                     : `whatsapp:${rawTwilioNumber}`;
