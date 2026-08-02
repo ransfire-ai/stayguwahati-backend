@@ -570,7 +570,7 @@ app.post('/api/bookings', async (req, res) => {
     }
 });
 
-// 4.5 Messages Route (Supports both /api/messages and /api/messages/send)
+// 4.5 Send Message Route (Supports both /api/messages and /api/messages/send)
 app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
     try {
         const { recipientPhone, message, senderName, propertyTitle, guestName, recipient, sender } = req.body;
@@ -607,7 +607,7 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
                     formattedPhone = `+91${formattedPhone.replace(/^0+/, '')}`;
                 }
 
-                // 3. Clean and sanitize Twilio FROM number (Prioritizes TWILIO_WHATSAPP_NUMBER, falls back to TWILIO_PHONE_NUMBER)
+                // 3. Clean and sanitize Twilio FROM number
                 const rawTwilioNumber = (process.env.TWILIO_WHATSAPP_NUMBER || process.env.TWILIO_PHONE_NUMBER || '').trim();
                 let fromWhatsAppNumber = rawTwilioNumber.startsWith('whatsapp:')
                     ? rawTwilioNumber
@@ -638,6 +638,54 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
     } catch (error) {
         console.error("Message Saving Error:", error);
         res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// 4.6 Get Messages Route (Fetches chat history for host & guest frontend)
+app.get('/api/messages', async (req, res) => {
+    try {
+        const { propertyTitle, guestName, recipientPhone } = req.query;
+        let filter = {};
+
+        if (propertyTitle) filter.propertyTitle = propertyTitle;
+        if (guestName) filter.guestName = guestName;
+        if (recipientPhone) filter.recipientPhone = recipientPhone;
+
+        const messages = await Message.find(filter).sort({ createdAt: 1 });
+
+        res.status(200).json({
+            success: true,
+            data: messages
+        });
+    } catch (error) {
+        console.error("Fetch Messages Error:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// 4.7 Twilio Inbound Webhook (Receives WhatsApp replies sent from phone numbers)
+app.post('/api/messages/webhook', async (req, res) => {
+    try {
+        const { From, Body, ProfileName } = req.body;
+
+        const senderPhone = From ? From.replace('whatsapp:', '') : '';
+
+        if (Body) {
+            const incomingMsg = new Message({
+                propertyTitle: 'StayGuwahati Property',
+                guestName: ProfileName || 'WhatsApp User',
+                senderName: ProfileName || senderPhone,
+                message: Body,
+                recipientPhone: senderPhone
+            });
+            await incomingMsg.save();
+        }
+
+        res.type('text/xml');
+        res.status(200).send('<Response></Response>');
+    } catch (error) {
+        console.error("Twilio Webhook Error:", error);
+        res.status(500).send("Webhook processing error");
     }
 });
 
