@@ -309,7 +309,6 @@ app.post('/api/bookings', async (req, res) => {
             totalPrice 
         } = req.body;
 
-        // 1. Mandatory Input Validation
         if (!firstName || !lastName || !email || !phone) {
             return res.status(400).json({ 
                 success: false, 
@@ -326,7 +325,6 @@ app.post('/api/bookings', async (req, res) => {
 
         const validHomestayId = new mongoose.Types.ObjectId(homestayId);
 
-        // Fetch property details
         const property = await Homestay.findById(validHomestayId);
         if (!property) {
             return res.status(444).json({ success: false, message: "Property not found." });
@@ -336,7 +334,6 @@ app.post('/api/bookings', async (req, res) => {
         const propertyAddress = property.address || property.locality || property.location || 'Guwahati, Assam';
         let googleMapsUrl = property.mapUrl || property.googleMapsLink || '';
 
-        // 2. Parse & Validate Dates
         let parsedCheckIn = checkIn ? new Date(checkIn) : null;
         let parsedCheckOut = checkOut ? new Date(checkOut) : null;
 
@@ -353,7 +350,6 @@ app.post('/api/bookings', async (req, res) => {
             });
         }
 
-        // 3. Date Overlap Availability Check
         const existingBooking = await Booking.findOne({
             $or: [
                 { homestayId: validHomestayId },
@@ -379,7 +375,6 @@ app.post('/api/bookings', async (req, res) => {
             googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${searchQuery}`;
         }
 
-        // 4. Create and Save Booking
         const newBooking = new Booking({ 
             firstName, 
             lastName, 
@@ -400,15 +395,12 @@ app.post('/api/bookings', async (req, res) => {
         
         await newBooking.save();
 
-        // 5. Send Dual Email Notifications (Guest + Host)
         const emailPromises = [];
 
-        // --- EMAIL 1: TO GUEST / CUSTOMER ---
         if (email) {
             const backendHost = process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com';
             const cleanHost = backendHost.replace(/\/$/, '').replace(/^http:\/\//i, 'https://');
 
-            // Default image endpoint route
             let propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`;
 
             let rawImage = null;
@@ -428,7 +420,6 @@ app.post('/api/bookings', async (req, res) => {
                 const trimmedImg = rawImage.trim();
 
                 if (trimmedImg.startsWith('data:image/')) {
-                    // Direct base64 strings to backend image decoder route
                     propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`;
                 } else if (trimmedImg.startsWith('http://') || trimmedImg.startsWith('https://')) {
                     propertyImageUrl = trimmedImg.replace(/^http:\/\//i, 'https://');
@@ -438,9 +429,6 @@ app.post('/api/bookings', async (req, res) => {
                 }
             }
 
-            console.log("📸 Final Image URL generated for Email:", propertyImageUrl);
-
-            // Static Map URL
             const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${encodeURIComponent(propertyAddress)}&zoom=14&size=600x200&maptype=roadmap&markers=color:red%7CLabel:S%7C${encodeURIComponent(propertyAddress)}&key=${process.env.GOOGLE_MAPS_API_KEY || ''}`;
 
             emailPromises.push(
@@ -458,15 +446,11 @@ app.post('/api/bookings', async (req, res) => {
                     <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; margin: 0; padding: 20px 10px;">
                         <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
                             
-                            <!-- Header Banner -->
                             <div style="background-color: #0d9488; padding: 20px 24px; text-align: center;">
                                 <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">StayGuwahati</h1>
                             </div>
 
-                            <!-- Main Email Content -->
                             <div style="padding: 28px 24px;">
-                                
-                                <!-- Status Pill -->
                                 <div style="display: inline-block; background-color: #ccfbf1; color: #0f766e; padding: 6px 14px; border-radius: 20px; font-weight: 600; font-size: 13px; margin-bottom: 12px;">
                                     ✓ Booking Confirmed
                                 </div>
@@ -476,7 +460,6 @@ app.post('/api/bookings', async (req, res) => {
                                     Your reservation for <strong>${formattedPropertyName}</strong> is all set!
                                 </p>
 
-                                <!-- Property Photo Card -->
                                 <div style="border-radius: 10px; overflow: hidden; margin-bottom: 20px; border: 1px solid #e2e8f0; background-color: #f8fafc;">
                                     <img src="${propertyImageUrl}" 
                                          alt="${formattedPropertyName}" 
@@ -487,7 +470,6 @@ app.post('/api/bookings', async (req, res) => {
                                     </div>
                                 </div>
 
-                                <!-- Booking Details Table -->
                                 <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px; margin-bottom: 20px;">
                                     <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #334155;">
                                         <tr>
@@ -505,7 +487,6 @@ app.post('/api/bookings', async (req, res) => {
                                     </table>
                                 </div>
 
-                                <!-- Location & Map Block -->
                                 <div style="border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; margin-bottom: 24px; background-color: #f1f5f9;">
                                     <a href="${googleMapsUrl}" target="_blank" style="text-decoration: none; display: block;">
                                         <img src="${process.env.GOOGLE_MAPS_API_KEY ? staticMapUrl : 'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?auto=format&fit=crop&w=600&h=180&q=80'}" 
@@ -517,7 +498,6 @@ app.post('/api/bookings', async (req, res) => {
                                     </a>
                                 </div>
 
-                                <!-- CTA Button -->
                                 <div style="text-align: center; margin-bottom: 24px;">
                                     <a href="${googleMapsUrl}" target="_blank" style="background-color: #0d9488; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 15px;">
                                         Get Directions to Property
@@ -529,7 +509,6 @@ app.post('/api/bookings', async (req, res) => {
                                 </p>
                             </div>
 
-                            <!-- Footer -->
                             <div style="background-color: #f8fafc; padding: 16px 24px; text-align: center; border-top: 1px solid #e2e8f0;">
                                 <p style="color: #94a3b8; font-size: 12px; margin: 0;">&copy; ${new Date().getFullYear()} StayGuwahati. All rights reserved.</p>
                             </div>
@@ -542,7 +521,6 @@ app.post('/api/bookings', async (req, res) => {
             );
         }
 
-        // --- EMAIL 2: TO HOST / ADMIN ---
         if (targetEmail) {
             emailPromises.push(
                 resend.emails.send({
@@ -592,19 +570,23 @@ app.post('/api/bookings', async (req, res) => {
     }
 });
 
-// 4.5 Messages Route
-app.post('/api/messages/send', async (req, res) => {
+// 4.5 Messages Route (Supports both /api/messages and /api/messages/send)
+app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
     try {
-        const { recipientPhone, message, senderName, propertyTitle, guestName } = req.body;
+        const { recipientPhone, message, senderName, propertyTitle, guestName, recipient, sender } = req.body;
 
-        if (!message || !propertyTitle || !guestName) {
-            return res.status(400).json({ success: false, error: "Missing required message fields." });
+        if (!message) {
+            return res.status(400).json({ success: false, error: "Missing required message field." });
         }
 
+        const finalGuestName = guestName || recipient || 'Valued Guest';
+        const finalPropertyTitle = propertyTitle || 'StayGuwahati Property';
+        const finalSenderName = senderName || sender || 'User';
+
         const newMessage = new Message({
-            propertyTitle,
-            guestName,
-            senderName: senderName || 'User',
+            propertyTitle: finalPropertyTitle,
+            guestName: finalGuestName,
+            senderName: finalSenderName,
             message,
             recipientPhone: recipientPhone || ''
         });
@@ -614,7 +596,7 @@ app.post('/api/messages/send', async (req, res) => {
         if (recipientPhone && process.env.TWILIO_PHONE_NUMBER) {
             try {
                 const twilioResponse = await twilioClient.messages.create({
-                    body: `[StayGuwahati] Message from ${senderName} regarding ${propertyTitle}: "${message}"`,
+                    body: `[StayGuwahati] Message from ${finalSenderName} regarding ${finalPropertyTitle}: "${message}"`,
                     from: process.env.TWILIO_PHONE_NUMBER.trim(),
                     to: recipientPhone.startsWith('+') ? recipientPhone : `+91${recipientPhone.trim()}`
                 });
@@ -698,7 +680,6 @@ app.get('/api/homestays/:id', async (req, res) => {
     }
 });
 
-// Dynamic Image Endpoint for Base64 & Email Compatibility
 app.get('/api/homestays/:id/image', async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -722,12 +703,11 @@ app.get('/api/homestays/:id/image', async (req, res) => {
                 const contentType = matches[1];
                 const imageBuffer = Buffer.from(matches[2], 'base64');
                 res.setHeader('Content-Type', contentType);
-                res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
+                res.setHeader('Cache-Control', 'public, max-age=86400');
                 return res.send(imageBuffer);
             }
         }
 
-        // If it's a URL or relative path, redirect to it
         if (typeof rawImage === 'string' && rawImage.trim().length > 0) {
             const trimmed = rawImage.trim();
             if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
@@ -739,7 +719,6 @@ app.get('/api/homestays/:id/image', async (req, res) => {
             return res.redirect(`${cleanHost}${cleanPath}`);
         }
 
-        // Default Villa / Homestay Fallback Image
         res.redirect('https://images.unsplash.com/photo-1580587771525-78b9dba3b914?auto=format&fit=crop&w=600&q=80');
     } catch (err) {
         console.error("Image server error:", err);
