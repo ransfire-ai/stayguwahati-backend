@@ -529,7 +529,7 @@ app.post('/api/bookings', async (req, res) => {
                     subject: 'New Booking Request for ' + formattedPropertyName,
                     html: `
                         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
-                            <h2>New Booking Received</h2>
+                            print("<h2>New Booking Received</h2>")
                             <p>You have received a new booking for <strong>${formattedPropertyName}</strong>.</p>
                             <ul>
                                 <li><strong>Guest Name:</strong> ${firstName} ${lastName}</li>
@@ -607,23 +607,24 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
                     formattedPhone = `+91${formattedPhone.replace(/^0+/, '')}`;
                 }
 
-                // 3. Construct SMS with direct reply link
-                const smsBody = `[StayGuwahati] Message from ${finalSenderName} regarding ${finalPropertyTitle}:\n"${message}"\n\nReply directly here:\n${chatLink}`;
+                // 3. Construct WhatsApp message body formatted with Markdown bolding
+                const whatsappBody = `*StayGuwahati Update*\n\nMessage from *${finalSenderName}* regarding *${finalPropertyTitle}*:\n"${message}"\n\nReply directly here:\n${chatLink}`;
 
+                // 4. Dispatch via Twilio WhatsApp API
                 const twilioResponse = await twilioClient.messages.create({
-                    body: smsBody,
-                    from: process.env.TWILIO_PHONE_NUMBER.trim(),
-                    to: formattedPhone
+                    body: whatsappBody,
+                    from: 'whatsapp:' + process.env.TWILIO_PHONE_NUMBER.trim(),
+                    to: `whatsapp:${formattedPhone}`
                 });
                 twilioSid = twilioResponse.sid;
             } catch (twilioErr) {
-                console.error("Twilio SMS Dispatch Warning:", twilioErr.message);
+                console.error("Twilio Dispatch Warning:", twilioErr.message);
             }
         }
 
         res.status(200).json({ 
             success: true, 
-            message: "Message saved and dispatched successfully.",
+            message: "Message saved and dispatched successfully via WhatsApp.",
             data: newMessage,
             sid: twilioSid 
         });
