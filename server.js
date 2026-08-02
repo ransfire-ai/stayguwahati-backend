@@ -595,10 +595,25 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
         let twilioSid = null;
         if (recipientPhone && process.env.TWILIO_PHONE_NUMBER) {
             try {
+                // 1. Generate direct browser chat link
+                const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
+                const encodedGuest = encodeURIComponent(finalGuestName);
+                const encodedProp = encodeURIComponent(finalPropertyTitle);
+                const chatLink = `${clientUrl}/chat.html?guest=${encodedGuest}&property=${encodedProp}`;
+
+                // 2. Format Phone Number to E.164 (+91 standard)
+                let formattedPhone = recipientPhone.trim().replace(/\s+/g, '');
+                if (!formattedPhone.startsWith('+')) {
+                    formattedPhone = `+91${formattedPhone.replace(/^0+/, '')}`;
+                }
+
+                // 3. Construct SMS with direct reply link
+                const smsBody = `[StayGuwahati] Message from ${finalSenderName} regarding ${finalPropertyTitle}:\n"${message}"\n\nReply directly here:\n${chatLink}`;
+
                 const twilioResponse = await twilioClient.messages.create({
-                    body: `[StayGuwahati] Message from ${finalSenderName} regarding ${finalPropertyTitle}: "${message}"`,
+                    body: smsBody,
                     from: process.env.TWILIO_PHONE_NUMBER.trim(),
-                    to: recipientPhone.startsWith('+') ? recipientPhone : `+91${recipientPhone.trim()}`
+                    to: formattedPhone
                 });
                 twilioSid = twilioResponse.sid;
             } catch (twilioErr) {
