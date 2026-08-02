@@ -607,13 +607,19 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
                     formattedPhone = `+91${formattedPhone.replace(/^0+/, '')}`;
                 }
 
-                // 3. Construct WhatsApp message body formatted with Markdown bolding
+                // 3. Clean and sanitize Twilio FROM number (prevents duplicate 'whatsapp:' prefix error 63007)
+                let rawTwilioNumber = process.env.TWILIO_PHONE_NUMBER.trim();
+                let fromWhatsAppNumber = rawTwilioNumber.startsWith('whatsapp:')
+                    ? rawTwilioNumber
+                    : `whatsapp:${rawTwilioNumber}`;
+
+                // 4. Construct WhatsApp message body formatted with Markdown bolding
                 const whatsappBody = `*StayGuwahati Update*\n\nMessage from *${finalSenderName}* regarding *${finalPropertyTitle}*:\n"${message}"\n\nReply directly here:\n${chatLink}`;
 
-                // 4. Dispatch via Twilio WhatsApp API
+                // 5. Dispatch via Twilio WhatsApp API
                 const twilioResponse = await twilioClient.messages.create({
                     body: whatsappBody,
-                    from: 'whatsapp:' + process.env.TWILIO_PHONE_NUMBER.trim(),
+                    from: fromWhatsAppNumber,
                     to: `whatsapp:${formattedPhone}`
                 });
                 twilioSid = twilioResponse.sid;
