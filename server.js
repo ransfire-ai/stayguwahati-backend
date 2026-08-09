@@ -276,16 +276,12 @@ app.post('/api/auth/forgot-password', async (req, res) => {
             return res.status(400).json({ success: false, message: "Email is required." });
         }
 
-        console.log(`[RESET] Password reset requested for: ${email}`);
-
         const user = await User.findOne({ email: email.toLowerCase() });
         
         if (!user) {
-            console.log(`[RESET] ❌ Email ${email} not found in database.`);
             return res.status(200).json({ success: true, message: "If your email is registered, a reset link has been sent." });
         }
 
-        console.log(`[RESET] ✅ User found. Generating token...`);
         const resetToken = crypto.randomBytes(32).toString('hex');
         user.resetToken = resetToken;
         user.resetTokenExpiry = Date.now() + 3600000; // 1 hour validity
@@ -294,14 +290,13 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
         const resetLink = `${clientUrl}/reset-password.html?token=${resetToken}`;
 
-        const emailResult = await resend.emails.send({
+        await resend.emails.send({
             from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
             to: user.email,
             subject: 'Password Reset Request - StayGuwahati',
             html: `<h3>Password Reset</h3><p>Click the link below to reset your password (valid for 1 hour):</p><a href="${resetLink}">${resetLink}</a>`
         });
 
-        console.log(`[RESET] ✉️ Resend API Response:`, emailResult);
         res.status(200).json({ success: true, message: "Reset link sent to your email!" });
     } catch (error) {
         console.error("[RESET] ❌ Error during password reset:", error);
