@@ -10,6 +10,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Resend } = require('resend');
 const twilio = require('twilio');
+const cron = require('node-cron'); // Added node-cron for scheduled tasks[cite: 3]
 
 // Initialize Resend & Twilio
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -90,8 +91,75 @@ const upload = multer({
 
 // Database Connection
 mongoose.connect(process.env.MONGODB_URI)
-    .then(() => console.log('Connected securely to MongoDB Atlas Instance.'))
+    .then(() => {
+        console.log('Connected securely to MongoDB Atlas Instance.');
+        // Initialize the scheduled background job once database connection is secured
+        initScheduledJobs();
+    })
     .catch(err => console.error('❌ DATABASE CONNECTION CRASHED!', err.message));
+
+// --- BACKGROUND CRON JOBS ---
+function initScheduledJobs() {
+    // Runs every day at 10:00 AM[cite: 3]
+    cron.schedule('0 10 * * *', async () => {
+        console.log('[CRON] Checking for completed stays to send review follow-up emails...');
+        try {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            // Find bookings that have checked out and haven't received a review prompt yet[cite: 3]
+            const completedBookings = await Booking.find({
+                checkOutDate: { $lt: today },
+                reviewEmailSent: { $ne: true },
+                status: { $nin: ['cancelled', 'rejected'] }
+            });
+
+            for (const booking of completedBookings) {
+                // If the booking doesn't have a review token yet, generate one[cite: 3]
+                if (!booking.reviewToken) {
+                    booking.reviewToken = crypto.randomBytes(32).toString('hex');
+                }
+
+                const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
+                const reviewUrl = `${clientUrl}/review.html?token=${booking.reviewToken}`;
+
+                // Send the follow-up email via Resend[cite: 3]
+                await resend.emails.send({
+                    from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
+                    to: booking.email,
+                    subject: `How was your stay at ${booking.propertyName}?`,
+                    html: `
+                        <!DOCTYPE html>
+                        <html>
+                        <body style="font-family: sans-serif; background-color: #f1f5f9; padding: 20px;">
+                            <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; padding: 30px;">
+                                <h2 style="color: #0f172a;">We hope you enjoyed your stay!</h2>
+                                <p style="color: #475569; font-size: 15px;">
+                                    Hi ${booking.firstName}, we hope you had a wonderful time at <strong>${booking.propertyName}</strong>. 
+                                    We would love to hear about your experience!
+                                </p>
+                                <div style="text-align: center; margin: 30px 0;">
+                                    <a href="${reviewUrl}" style="background-color: #0f766e; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block;">
+                                        Leave a Review
+                                    </a>
+                                </div>
+                                <p style="color: #94a3b8; font-size: 13px;">Thank you for choosing StayGuwahati.</p>
+                            </div>
+                        </body>
+                        </html>
+                    `
+                });
+
+                // Mark email as sent to prevent duplicates[cite: 3]
+                booking.reviewEmailSent = true;
+                await booking.save();
+                console.log(`[CRON] Review follow-up email sent to ${booking.email}`);
+            }
+        } catch (error) {
+            console.error('[CRON] Error sending review follow-up emails:', error);
+        }
+    });
+}
 
 // --- AUTHENTICATION MIDDLEWARE ---
 const authenticateToken = (req, res, next) => {
@@ -377,6 +445,9 @@ app.post('/api/bookings', async (req, res) => {
             googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${searchQuery}`;
         }
 
+        // Generate a secure review token for verified guest reviews[cite: 1]
+        const reviewToken = crypto.randomBytes(32).toString('hex');
+
         const newBooking = new Booking({
             firstName,
             lastName,
@@ -392,7 +463,10 @@ app.post('/api/bookings', async (req, res) => {
             hostEmail: targetEmail,
             nights: nights || 1,
             totalPrice: totalPrice || 0,
-            status: req.body.status || 'Confirmed'
+            status: req.body.status || 'Confirmed',
+            reviewToken,
+            reviewSubmitted: false,
+            reviewEmailSent: false
         });
         
         await newBooking.save();
@@ -432,6 +506,10 @@ app.post('/api/bookings', async (req, res) => {
             }
 
             const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${encodeURIComponent(propertyAddress)}&zoom=14&size=600x200&maptype=roadmap&markers=color:red%7CLabel:S%7C${encodeURIComponent(propertyAddress)}&key=${process.env.GOOGLE_MAPS_API_KEY || ''}`;
+
+            // Construct review link for post-stay review URL email integration[cite: 1]
+            const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
+            const reviewUrl = `${clientUrl}/review.html?token=${reviewToken}`;
 
             emailPromises.push(
                 resend.emails.send({
@@ -503,6 +581,12 @@ app.post('/api/bookings', async (req, res) => {
                                 <div style="text-align: center; margin-bottom: 24px;">
                                     <a href="${googleMapsUrl}" target="_blank" style="background-color: #0d9488; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 15px;">
                                         Get Directions to Property
+                                    </a>
+                                </div>
+
+                                <div style="text-align: center; margin-bottom: 24px;">
+                                    <a href="${reviewUrl}" style="background-color: #0f766e; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 14px;">
+                                        Leave a Review After Your Stay
                                     </a>
                                 </div>
 
@@ -601,6 +685,43 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     }
 });
 
+// 4.2 Post-Stay Review Submission Route
+app.post('/api/reviews', async (req, res) => {
+    try {
+        const { token, rating, comment } = req.body;
+
+        if (!token) {
+            return res.status(400).json({ success: false, message: "Review token is missing." });
+        }
+
+        if (!rating) {
+            return res.status(400).json({ success: false, message: "A rating is required to submit a review." });
+        }
+
+        const booking = await Booking.findOne({ reviewToken: token });
+        if (!booking) {
+            return res.status(400).json({ success: false, message: "Invalid or expired review token." });
+        }
+
+        if (booking.reviewSubmitted) {
+            return res.status(400).json({ success: false, message: "A review has already been submitted for this booking." });
+        }
+
+        // Mark the booking review as submitted so the token cannot be reused
+        booking.reviewSubmitted = true;
+        booking.reviewToken = undefined;
+        await booking.save();
+
+        res.status(200).json({ 
+            success: true, 
+            message: "Thank you! Your verified review has been submitted successfully." 
+        });
+    } catch (error) {
+        console.error("Review submission error:", error);
+        res.status(500).json({ success: false, message: "Server error during review submission." });
+    }
+});
+
 // 4.5 Send Message Route (Supports both /api/messages and /api/messages/send)
 app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
     try {
@@ -626,28 +747,23 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
         let twilioSid = null;
         if (twilioClient && recipientPhone && (process.env.TWILIO_WHATSAPP_NUMBER || process.env.TWILIO_PHONE_NUMBER)) {
             try {
-                // 1. Generate direct browser chat link
                 const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
                 const encodedGuest = encodeURIComponent(finalGuestName);
                 const encodedProp = encodeURIComponent(finalPropertyTitle);
                 const chatLink = `${clientUrl}/chat.html?guest=${encodedGuest}&property=${encodedProp}`;
 
-                // 2. Format Phone Number to E.164 (+91 standard)
                 let formattedPhone = recipientPhone.trim().replace(/\s+/g, '');
                 if (!formattedPhone.startsWith('+')) {
                     formattedPhone = `+91${formattedPhone.replace(/^0+/, '')}`;
                 }
 
-                // 3. Clean and sanitize Twilio FROM number
                 const rawTwilioNumber = (process.env.TWILIO_WHATSAPP_NUMBER || process.env.TWILIO_PHONE_NUMBER || '').trim();
                 let fromWhatsAppNumber = rawTwilioNumber.startsWith('whatsapp:')
                     ? rawTwilioNumber
                     : `whatsapp:${rawTwilioNumber}`;
 
-                // 4. Construct WhatsApp message body formatted with Markdown bolding
                 const whatsappBody = `*StayGuwahati Update*\n\nMessage from *${finalSenderName}* regarding *${finalPropertyTitle}*:\n"${message}"\n\nReply directly here:\n${chatLink}`;
 
-                // 5. Dispatch via Twilio WhatsApp API
                 const twilioResponse = await twilioClient.messages.create({
                     body: whatsappBody,
                     from: fromWhatsAppNumber,

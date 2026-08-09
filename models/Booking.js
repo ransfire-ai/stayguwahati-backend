@@ -6,7 +6,7 @@ const bookingSchema = new mongoose.Schema({
     email: { type: String, required: true, lowercase: true, trim: true },
     phone: { type: String },
     propertyName: { type: String },
-    dates: { type: String, required: true }, // Legacy/display string format
+    dates: { type: String, required: true }, // Legacy/display string format[cite: 4]
     
     // --- REQUIRED FOR PREVENTING OVERLAPPING BOOKINGS ---
     checkInDate: { type: Date, required: true },
@@ -37,6 +37,11 @@ const bookingSchema = new mongoose.Schema({
 
     // Useful for filtering host-specific incoming bookings directly
     hostEmail: { type: String, lowercase: true, trim: true },
+
+    // --- NEW FIELDS FOR VERIFIED REVIEWS ---
+    reviewSubmitted: { type: Boolean, default: false },
+    reviewToken: { type: String, required: true, unique: true },
+
     createdAt: { type: Date, default: Date.now }
 });
 
@@ -44,3 +49,4 @@ const bookingSchema = new mongoose.Schema({
 bookingSchema.index({ homestayId: 1, checkInDate: 1 }, { unique: true });
 
 module.exports = mongoose.model('Booking', bookingSchema);
+```[cite: 4]
