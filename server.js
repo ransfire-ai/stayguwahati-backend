@@ -10,7 +10,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Resend } = require('resend');
 const twilio = require('twilio');
-const cron = require('node-cron'); // Added node-cron for scheduled tasks[cite: 3]
+const cron = require('node-cron');
 
 // Initialize Resend & Twilio
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -93,21 +93,18 @@ const upload = multer({
 mongoose.connect(process.env.MONGODB_URI)
     .then(() => {
         console.log('Connected securely to MongoDB Atlas Instance.');
-        // Initialize the scheduled background job once database connection is secured
         initScheduledJobs();
     })
     .catch(err => console.error('❌ DATABASE CONNECTION CRASHED!', err.message));
 
 // --- BACKGROUND CRON JOBS ---
 function initScheduledJobs() {
-    // Runs every day at 10:00 AM[cite: 3]
     cron.schedule('0 10 * * *', async () => {
         console.log('[CRON] Checking for completed stays to send review follow-up emails...');
         try {
             const today = new Date();
             today.setHours(0, 0, 0, 0);
 
-            // Find bookings that have checked out and haven't received a review prompt yet[cite: 3]
             const completedBookings = await Booking.find({
                 checkOutDate: { $lt: today },
                 reviewEmailSent: { $ne: true },
@@ -115,7 +112,6 @@ function initScheduledJobs() {
             });
 
             for (const booking of completedBookings) {
-                // If the booking doesn't have a review token yet, generate one[cite: 3]
                 if (!booking.reviewToken) {
                     booking.reviewToken = crypto.randomBytes(32).toString('hex');
                 }
@@ -123,7 +119,6 @@ function initScheduledJobs() {
                 const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
                 const reviewUrl = `${clientUrl}/review.html?token=${booking.reviewToken}`;
 
-                // Send the follow-up email via Resend[cite: 3]
                 await resend.emails.send({
                     from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
                     to: booking.email,
@@ -150,7 +145,6 @@ function initScheduledJobs() {
                     `
                 });
 
-                // Mark email as sent to prevent duplicates[cite: 3]
                 booking.reviewEmailSent = true;
                 await booking.save();
                 console.log(`[CRON] Review follow-up email sent to ${booking.email}`);
@@ -284,7 +278,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
         const resetToken = crypto.randomBytes(32).toString('hex');
         user.resetToken = resetToken;
-        user.resetTokenExpiry = Date.now() + 3600000; // 1 hour validity
+        user.resetTokenExpiry = Date.now() + 3600000;
         await user.save();
 
         const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
@@ -440,7 +434,6 @@ app.post('/api/bookings', async (req, res) => {
             googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${searchQuery}`;
         }
 
-        // Generate a secure review token for verified guest reviews[cite: 1]
         const reviewToken = crypto.randomBytes(32).toString('hex');
 
         const newBooking = new Booking({
@@ -502,7 +495,6 @@ app.post('/api/bookings', async (req, res) => {
 
             const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${encodeURIComponent(propertyAddress)}&zoom=14&size=600x200&maptype=roadmap&markers=color:red%7CLabel:S%7C${encodeURIComponent(propertyAddress)}&key=${process.env.GOOGLE_MAPS_API_KEY || ''}`;
 
-            // Construct review link for post-stay review URL email integration[cite: 1]
             const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
             const reviewUrl = `${clientUrl}/review.html?token=${reviewToken}`;
 
@@ -562,17 +554,6 @@ app.post('/api/bookings', async (req, res) => {
                                     </table>
                                 </div>
 
-                                <div style="border-radius: 10px; overflow: hidden; border: 1px solid #e2e8f0; margin-bottom: 24px; background-color: #f1f5f9;">
-                                    <a href="${googleMapsUrl}" target="_blank" style="text-decoration: none; display: block;">
-                                        <img src="${process.env.GOOGLE_MAPS_API_KEY ? staticMapUrl : 'https://images.unsplash.com/photo-1526778548025-fa2f459cd5c1?auto=format&fit=crop&w=600&h=180&q=80'}" 
-                                             alt="Property Map Location" 
-                                             style="width: 100%; max-height: 180px; object-fit: cover; border: 0; display: block;" />
-                                        <div style="padding: 12px; background-color: #ffffff; color: #0d9488; font-weight: 600; font-size: 14px; border-top: 1px solid #e2e8f0; text-align: center;">
-                                            📍 Click to Open Google Maps Directions
-                                        </div>
-                                    </a>
-                                </div>
-
                                 <div style="text-align: center; margin-bottom: 24px;">
                                     <a href="${googleMapsUrl}" target="_blank" style="background-color: #0d9488; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 15px;">
                                         Get Directions to Property
@@ -584,16 +565,7 @@ app.post('/api/bookings', async (req, res) => {
                                         Leave a Review After Your Stay
                                     </a>
                                 </div>
-
-                                <p style="color: #94a3b8; font-size: 13px; line-height: 1.4; margin: 0; text-align: center;">
-                                    Need help? Reply to this email or reach us at <a href="mailto:support@stayguwahati.in" style="color: #0d9488; text-decoration: none;">support@stayguwahati.in</a>
-                                </p>
                             </div>
-
-                            <div style="background-color: #f8fafc; padding: 16px 24px; text-align: center; border-top: 1px solid #e2e8f0;">
-                                <p style="color: #94a3b8; font-size: 12px; margin: 0;">&copy; ${new Date().getFullYear()} StayGuwahati. All rights reserved.</p>
-                            </div>
-
                         </div>
                     </body>
                     </html>
@@ -635,7 +607,6 @@ app.post('/api/bookings', async (req, res) => {
 
     } catch (error) {
         if (error.name === 'ValidationError') {
-            console.error("Mongoose Validation Error:", error.message);
             return res.status(400).json({ success: false, message: error.message });
         }
 
@@ -646,7 +617,6 @@ app.post('/api/bookings', async (req, res) => {
             });
         }
 
-        console.error("Booking route unexpected error:", error);
         res.status(500).json({ success: false, message: error.message || "Server error during booking." });
     }
 });
@@ -675,7 +645,6 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
 
         res.status(200).json({ success: true, message: "Booking status updated", data: updatedBooking });
     } catch (error) {
-        console.error("Booking status update error:", error);
         res.status(500).json({ success: false, message: "Server error." });
     }
 });
@@ -683,7 +652,7 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
 // 4.2 Post-Stay Review Submission Route
 app.post('/api/reviews', async (req, res) => {
     try {
-        const { token, rating, comment } = req.body;
+        const { token, rating } = req.body;
 
         if (!token) {
             return res.status(400).json({ success: false, message: "Review token is missing." });
@@ -702,7 +671,6 @@ app.post('/api/reviews', async (req, res) => {
             return res.status(400).json({ success: false, message: "A review has already been submitted for this booking." });
         }
 
-        // Mark the booking review as submitted so the token cannot be reused
         booking.reviewSubmitted = true;
         booking.reviewToken = undefined;
         await booking.save();
@@ -712,12 +680,11 @@ app.post('/api/reviews', async (req, res) => {
             message: "Thank you! Your verified review has been submitted successfully." 
         });
     } catch (error) {
-        console.error("Review submission error:", error);
         res.status(500).json({ success: false, message: "Server error during review submission." });
     }
 });
 
-// 4.5 Send Message Route (Supports both /api/messages and /api/messages/send)
+// 4.5 Send Message Route
 app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
     try {
         const { recipientPhone, message, senderName, propertyTitle, guestName, recipient, sender } = req.body;
@@ -778,12 +745,11 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Message Saving Error:", error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// 4.6 Get Messages Route (Fetches chat history for host & guest frontend)
+// 4.6 Get Messages Route
 app.get('/api/messages', async (req, res) => {
     try {
         const { propertyTitle, guestName, recipientPhone } = req.query;
@@ -800,16 +766,14 @@ app.get('/api/messages', async (req, res) => {
             data: messages
         });
     } catch (error) {
-        console.error("Fetch Messages Error:", error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// 4.7 Twilio Inbound Webhook (Receives WhatsApp replies sent from phone numbers)
+// 4.7 Twilio Inbound Webhook
 app.post('/api/messages/webhook', async (req, res) => {
     try {
         const { From, Body, ProfileName } = req.body;
-
         const senderPhone = From ? From.replace('whatsapp:', '') : '';
 
         if (Body) {
@@ -826,7 +790,6 @@ app.post('/api/messages/webhook', async (req, res) => {
         res.type('text/xml');
         res.status(200).send('<Response></Response>');
     } catch (error) {
-        console.error("Twilio Webhook Error:", error);
         res.status(500).send("Webhook processing error");
     }
 });
@@ -868,7 +831,6 @@ const getHomestaysHandler = async (req, res) => {
         const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 });
         res.status(200).json({ success: true, count: listings.length, data: listings });
     } catch (error) {
-        console.error("GET homestays error:", error);
         res.status(500).json({ success: false, message: 'Server Error' });
     }
 };
@@ -884,7 +846,6 @@ const getSingleHomestayHandler = async (req, res) => {
         
         res.status(200).json({ success: true, data: homestay });
     } catch (error) {
-        console.error("GET single homestay error:", error);
         res.status(500).json({ success: false, message: 'Server Error' });
     }
 };
@@ -936,7 +897,6 @@ app.get('/api/homestays/:id/image', async (req, res) => {
 
         res.redirect('https://images.unsplash.com/photo-1580587771525-78b9dba3b914?auto=format&fit=crop&w=600&q=80');
     } catch (err) {
-        console.error("Image server error:", err);
         res.status(500).send("Error loading image");
     }
 });
@@ -956,12 +916,10 @@ app.post('/api/homestays', async (req, res) => {
         const newStay = await Homestay.create(formattedData);
         res.status(201).json({ success: true, message: 'Listing created!', data: newStay });
     } catch (error) {
-        console.error("❌ MONGODB VALIDATION/SAVE ERROR:", error.message);
         res.status(400).json({ success: false, message: 'Validation failed', error: error.message });
     }
 });
 
-// Update Property Details
 app.put('/api/homestays/:id', authenticateToken, async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -980,12 +938,10 @@ app.put('/api/homestays/:id', authenticateToken, async (req, res) => {
 
         res.status(200).json({ success: true, message: "Property updated successfully!", data: updatedProperty });
     } catch (error) {
-        console.error("Update property error:", error);
         res.status(500).json({ success: false, message: "Server error during update." });
     }
 });
 
-// Delete Property
 app.delete('/api/homestays/:id', authenticateToken, async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -999,12 +955,10 @@ app.delete('/api/homestays/:id', authenticateToken, async (req, res) => {
 
         res.status(200).json({ success: true, message: "Property deleted successfully." });
     } catch (error) {
-        console.error("Delete property error:", error);
         res.status(500).json({ success: false, message: "Server error during deletion." });
     }
 });
 
-// 7. Admin Status Update (Protected by JWT)
 app.patch('/api/admin/homestays/:id/status', authenticateToken, async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -1024,7 +978,6 @@ app.patch('/api/admin/homestays/:id/status', authenticateToken, async (req, res)
         if (!updatedProperty) return res.status(404).json({ success: false, message: "Property not found." });
         res.json({ success: true, message: "Status updated!", data: updatedProperty });
     } catch (err) {
-        console.error("Admin status update error:", err);
         res.status(500).json({ success: false, message: "Server error." });
     }
 });
