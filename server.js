@@ -27,7 +27,7 @@ const Message = require('./models/message');
 
 const app = express();
 
-// CORS Configuration
+// CORS Configuration (Updated to support Vercel preview & production deployments)
 const allowedOrigins = [
     'https://stayguwahati.in',
     'https://www.stayguwahati.in',
@@ -42,7 +42,8 @@ const allowedOrigins = [
 app.use(cors({
     origin: function (origin, callback) {
         if (!origin) return callback(null, true);
-        if (allowedOrigins.includes(origin)) {
+        const isVercel = /\.vercel\.app$/.test(origin);
+        if (allowedOrigins.includes(origin) || isVercel) {
             return callback(null, true);
         } else {
             return callback(null, false);
