@@ -24,6 +24,7 @@ const Ticket = require('./models/Ticket');
 const User = require('./models/User');
 const Booking = require('./models/Booking');
 const Message = require('./models/message');
+const Review = require('./models/Review');
 
 const app = express();
 
@@ -662,10 +663,33 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     }
 });
 
-// 4.2 Post-Stay Review Submission Route
+// 4.2 Get Reviews Route
+app.get('/api/reviews', async (req, res) => {
+    try {
+        const { propertyId } = req.query;
+        let filter = {};
+
+        if (propertyId && mongoose.Types.ObjectId.isValid(propertyId)) {
+            filter.propertyId = propertyId;
+        }
+
+        const reviews = await Review.find(filter).sort({ createdAt: -1 });
+
+        res.status(200).json({
+            success: true,
+            count: reviews.length,
+            data: reviews
+        });
+    } catch (error) {
+        console.error("Fetch reviews error:", error);
+        res.status(500).json({ success: false, message: "Error fetching reviews." });
+    }
+});
+
+// 4.3 Post-Stay Review Submission Route
 app.post('/api/reviews', async (req, res) => {
     try {
-        const { token, rating } = req.body;
+        const { token, rating, comment, guestName } = req.body;
 
         if (!token) {
             return res.status(400).json({ success: false, message: "Review token is missing." });
@@ -684,15 +708,27 @@ app.post('/api/reviews', async (req, res) => {
             return res.status(400).json({ success: false, message: "A review has already been submitted for this booking." });
         }
 
+        const newReview = new Review({
+            propertyId: booking.propertyId || booking.homestayId,
+            bookingId: booking._id,
+            guestName: guestName || `${booking.firstName} ${booking.lastName}`.trim() || 'Verified Guest',
+            rating: Number(rating),
+            comment: comment || ''
+        });
+
+        await newReview.save();
+
         booking.reviewSubmitted = true;
         booking.reviewToken = undefined;
         await booking.save();
 
         res.status(200).json({ 
             success: true, 
-            message: "Thank you! Your verified review has been submitted successfully." 
+            message: "Thank you! Your verified review has been submitted successfully.",
+            data: newReview
         });
     } catch (error) {
+        console.error("Review submission error:", error);
         res.status(500).json({ success: false, message: "Server error during review submission." });
     }
 });
