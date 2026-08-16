@@ -12,13 +12,13 @@ const { Resend } = require('resend');
 const twilio = require('twilio');
 const cron = require('node-cron');
 
-// Initialize Resend & Twilio[cite: 10]
+// Initialize Resend & Twilio
 const resend = new Resend(process.env.RESEND_API_KEY);
 const twilioClient = process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN 
     ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
     : null;
 
-// Models[cite: 10]
+// Models
 const Homestay = require('./models/Homestay');
 const Ticket = require('./models/Ticket');
 const User = require('./models/User');
@@ -27,7 +27,7 @@ const Message = require('./models/message');
 
 const app = express();
 
-// CORS Configuration (Updated to support Vercel preview & production deployments)[cite: 10]
+// CORS Configuration (Updated to support Vercel preview & production deployments)
 const allowedOrigins = [
     'https://stayguwahati.in',
     'https://www.stayguwahati.in',
@@ -57,16 +57,16 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// Ensure uploads folder exists dynamically[cite: 10]
+// Ensure uploads folder exists dynamically
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Expose static files[cite: 10]
+// Expose static files
 app.use('/uploads', express.static(uploadDir));
 
-// --- MULTER STORAGE SETUP ---[cite: 10]
+// --- MULTER STORAGE SETUP ---
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         cb(null, uploadDir);
@@ -90,7 +90,7 @@ const upload = multer({
     limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-// Database Connection[cite: 10]
+// Database Connection
 mongoose.connect(process.env.MONGODB_URI)
     .then(() => {
         console.log('Connected securely to MongoDB Atlas Instance.');
@@ -98,7 +98,7 @@ mongoose.connect(process.env.MONGODB_URI)
     })
     .catch(err => console.error('❌ DATABASE CONNECTION CRASHED!', err.message));
 
-// --- BACKGROUND CRON JOBS ---[cite: 10]
+// --- BACKGROUND CRON JOBS ---
 function initScheduledJobs() {
     cron.schedule('0 10 * * *', async () => {
         console.log('[CRON] Checking for completed stays to send review follow-up emails...');
@@ -118,7 +118,7 @@ function initScheduledJobs() {
                 }
 
                 const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
-                const reviewUrl = `${clientUrl}/review.html?token=${booking.reviewToken}`;
+                const reviewUrl = `${clientUrl}/review?token=${booking.reviewToken}`;
 
                 await resend.emails.send({
                     from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
@@ -156,7 +156,7 @@ function initScheduledJobs() {
     });
 }
 
-// --- AUTHENTICATION MIDDLEWARE ---[cite: 10]
+// --- AUTHENTICATION MIDDLEWARE ---
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -176,9 +176,9 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-// --- API ROUTES ---[cite: 10]
+// --- API ROUTES ---
 
-// 1. Support Ticket Route[cite: 10]
+// 1. Support Ticket Route
 app.post('/api/tickets', async (req, res) => {
     try {
         const { subject, description, category } = req.body;
@@ -203,7 +203,7 @@ app.post('/api/tickets', async (req, res) => {
     }
 });
 
-// 2. Authentication: Login[cite: 10]
+// 2. Authentication: Login
 app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
     try {
@@ -241,7 +241,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// 3. Authentication: Register[cite: 10]
+// 3. Authentication: Register
 app.post('/api/auth/register', async (req, res) => {
     const { name, email, password } = req.body;
     try {
@@ -263,7 +263,7 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// 3.5 Authentication: Forgot Password[cite: 10]
+// 3.5 Authentication: Forgot Password
 app.post('/api/auth/forgot-password', async (req, res) => {
     try {
         const { email } = req.body;
@@ -283,7 +283,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         await user.save();
 
         const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
-        const resetLink = `${clientUrl}/reset-password.html?token=${resetToken}`;
+        const resetLink = `${clientUrl}/reset-password?token=${resetToken}`;
 
         await resend.emails.send({
             from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
@@ -299,7 +299,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     }
 });
 
-// 3.6 Authentication: Reset Password Complete[cite: 10]
+// 3.6 Authentication: Reset Password Complete
 app.post('/api/auth/reset-password', async (req, res) => {
     try {
         const { token, newPassword } = req.body;
@@ -330,7 +330,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
     }
 });
 
-// 4. Booking Routes[cite: 10]
+// 4. Booking Routes
 app.get('/api/bookings', async (req, res) => {
     try {
         const { email } = req.query;
@@ -372,7 +372,7 @@ app.post('/api/bookings', async (req, res) => {
             totalAmount
         } = req.body;
 
-        // --- 1. Robust Guest Info Parsing ---[cite: 10]
+        // --- 1. Robust Guest Info Parsing ---
         if (guestInfo) {
             if (!email && guestInfo.email) email = guestInfo.email;
             if (!phone && guestInfo.phone) phone = guestInfo.phone;
@@ -394,7 +394,7 @@ app.post('/api/bookings', async (req, res) => {
         email = email || 'guest@stayguwahati.in';
         phone = phone || '9876543210';
 
-        // --- 2. Flexible Property & ID Resolution ---[cite: 10]
+        // --- 2. Flexible Property & ID Resolution ---
         let targetHomestayId = homestayId || propertyId || req.body.id;
         let property = null;
 
@@ -402,12 +402,12 @@ app.post('/api/bookings', async (req, res) => {
             property = await Homestay.findById(targetHomestayId);
         }
 
-        // Fallback: If property ID is invalid or not found, grab the first available property in DB[cite: 10]
+        // Fallback: If property ID is invalid or not found, grab the first available property in DB
         if (!property) {
             property = await Homestay.findOne({});
         }
 
-        // Ultimate Fallback: If database has zero properties, create a default one on the fly[cite: 10]
+        // Ultimate Fallback: If database has zero properties, create a default one on the fly
         if (!property) {
             property = await Homestay.create({
                 title: propertyName || 'Green Villa',
@@ -423,7 +423,7 @@ app.post('/api/bookings', async (req, res) => {
         const propertyAddress = property.address || property.locality || 'Guwahati, Assam';
         let googleMapsUrl = property.mapUrl || property.googleMapsLink || '';
 
-        // --- 3. Date & Pricing Normalization ---[cite: 10]
+        // --- 3. Date & Pricing Normalization ---
         let parsedCheckIn = checkIn ? new Date(checkIn) : new Date();
         let parsedCheckOut = checkOut ? new Date(checkOut) : new Date(Date.now() + 86400000);
 
@@ -449,7 +449,7 @@ app.post('/api/bookings', async (req, res) => {
 
         const reviewToken = crypto.randomBytes(32).toString('hex');
 
-        // --- 4. Save Booking ---[cite: 10]
+        // --- 4. Save Booking ---
         const newBooking = new Booking({
             firstName,
             lastName,
@@ -473,7 +473,7 @@ app.post('/api/bookings', async (req, res) => {
         
         await newBooking.save();
 
-        // --- 5. Async Email Dispatch (Non-blocking) ---[cite: 10]
+        // --- 5. Async Email Dispatch (Non-blocking) ---
         const emailPromises = [];
 
         if (email) {
@@ -509,7 +509,7 @@ app.post('/api/bookings', async (req, res) => {
             }
 
             const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
-            const reviewUrl = `${clientUrl}/review.html?token=${reviewToken}`;
+            const reviewUrl = `${clientUrl}/review?token=${reviewToken}`;
 
             emailPromises.push(
                 resend.emails.send({
@@ -634,7 +634,7 @@ app.post('/api/bookings', async (req, res) => {
     }
 });
 
-// 4.1 Update / Cancel Booking Status[cite: 10]
+// 4.1 Update / Cancel Booking Status
 app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -662,7 +662,7 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     }
 });
 
-// 4.2 Post-Stay Review Submission Route[cite: 10]
+// 4.2 Post-Stay Review Submission Route
 app.post('/api/reviews', async (req, res) => {
     try {
         const { token, rating } = req.body;
@@ -697,7 +697,7 @@ app.post('/api/reviews', async (req, res) => {
     }
 });
 
-// 4.5 Send Message Route[cite: 10]
+// 4.5 Send Message Route
 app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
     try {
         const { recipientPhone, message, senderName, propertyTitle, guestName, recipient, sender } = req.body;
@@ -726,8 +726,7 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
                 const encodedGuest = encodeURIComponent(finalGuestName);
                 const encodedProp = encodeURIComponent(finalPropertyTitle);
                 
-                // FIXED: Removed '.html' so it matches Next.js app routing (/chat instead of /chat.html)
-                const chatLink = `${clientUrl}/chat.html?guest=${encodedGuest}&property=${encodedProp}`;
+                const chatLink = `${clientUrl}/chat?guest=${encodedGuest}&property=${encodedProp}`;
 
                 let formattedPhone = recipientPhone.trim().replace(/\s+/g, '');
                 if (!formattedPhone.startsWith('+')) {
@@ -764,7 +763,7 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
     }
 });
 
-// 4.6 Get Messages Route[cite: 10]
+// 4.6 Get Messages Route
 app.get('/api/messages', async (req, res) => {
     try {
         const { propertyTitle, guestName, recipientPhone } = req.query;
@@ -785,7 +784,7 @@ app.get('/api/messages', async (req, res) => {
     }
 });
 
-// 4.7 Twilio Inbound Webhook[cite: 10]
+// 4.7 Twilio Inbound Webhook
 app.post('/api/messages/webhook', async (req, res) => {
     try {
         const { From, Body, ProfileName } = req.body;
@@ -809,7 +808,7 @@ app.post('/api/messages/webhook', async (req, res) => {
     }
 });
 
-// 5. File Upload[cite: 10]
+// 5. File Upload
 app.post('/api/upload-images', (req, res) => {
     upload.array('photos', 3)(req, res, (err) => {
         if (err instanceof multer.MulterError) {
@@ -827,7 +826,7 @@ app.post('/api/upload-images', (req, res) => {
     });
 });
 
-// 6. Homestay Operations[cite: 10]
+// 6. Homestay Operations
 const getHomestaysHandler = async (req, res) => {
     try {
         const { locality, maxPrice, feature, status } = req.query;
@@ -997,7 +996,7 @@ app.patch('/api/admin/homestays/:id/status', authenticateToken, async (req, res)
     }
 });
 
-// Centralized Global Error Handler[cite: 10]
+// Centralized Global Error Handler
 app.use((err, req, res, next) => {
     console.error("Unhandled Global Error:", err);
     res.status(500).json({ success: false, message: err.message || "Internal Server Error" });
