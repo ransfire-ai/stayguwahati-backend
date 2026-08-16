@@ -727,7 +727,7 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
                 const encodedProp = encodeURIComponent(finalPropertyTitle);
                 
                 // FIXED: Removed '.html' so it matches Next.js app routing (/chat instead of /chat.html)
-                const chatLink = `${clientUrl}/chat?guest=${encodedGuest}&property=${encodedProp}`;
+                const chatLink = `${clientUrl}/chat.html?guest=${encodedGuest}&property=${encodedProp}`;
 
                 let formattedPhone = recipientPhone.trim().replace(/\s+/g, '');
                 if (!formattedPhone.startsWith('+')) {
