@@ -355,19 +355,39 @@ app.get('/api/bookings', async (req, res) => {
 
 app.post('/api/bookings', async (req, res) => {
     try {
-        const {
+        let {
             firstName,
             lastName,
             email,
             phone,
+            guestInfo,
             propertyName,
             dates,
             homestayId,
+            propertyId,
             checkIn,
             checkOut,
             nights,
-            totalPrice
+            totalPrice,
+            totalAmount
         } = req.body;
+
+        // --- Robust Payload Normalization (Handles nested guestInfo or flat fields) ---
+        if (guestInfo) {
+            if (!email && guestInfo.email) email = guestInfo.email;
+            if (!phone && guestInfo.phone) phone = guestInfo.phone;
+            if (!firstName && !lastName && guestInfo.fullName) {
+                const parts = guestInfo.fullName.trim().split(' ');
+                firstName = parts[0] || '';
+                lastName = parts.slice(1).join(' ') || '';
+            }
+        }
+
+        if ((!firstName || !lastName) && req.body.fullName) {
+            const parts = req.body.fullName.trim().split(' ');
+            firstName = firstName || parts[0] || '';
+            lastName = lastName || parts.slice(1).join(' ') || '';
+        }
 
         if (!firstName || !lastName || !email || !phone) {
             return res.status(400).json({
@@ -376,14 +396,15 @@ app.post('/api/bookings', async (req, res) => {
             });
         }
 
-        if (!homestayId || homestayId === 'unknown' || !mongoose.Types.ObjectId.isValid(homestayId)) {
+        const targetHomestayId = homestayId || propertyId;
+        if (!targetHomestayId || targetHomestayId === 'unknown' || !mongoose.Types.ObjectId.isValid(targetHomestayId)) {
             return res.status(400).json({
                 success: false,
                 message: "A valid Homestay ID is required to complete a booking."
             });
         }
 
-        const validHomestayId = new mongoose.Types.ObjectId(homestayId);
+        const validHomestayId = new mongoose.Types.ObjectId(targetHomestayId);
 
         const property = await Homestay.findById(validHomestayId);
         if (!property) {
@@ -428,7 +449,8 @@ app.post('/api/bookings', async (req, res) => {
         }
 
         const formattedDates = dates || `${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]}`;
-        const formattedPropertyName = propertyName || property.title || 'Homestay';
+        const formattedPropertyName = propertyName || property.title || property.propertyName || 'Homestay';
+        const finalTotalPrice = totalPrice !== undefined ? totalPrice : (totalAmount !== undefined ? totalAmount : 0);
 
         if (!googleMapsUrl) {
             const searchQuery = encodeURIComponent(`${formattedPropertyName} ${propertyAddress}`);
@@ -451,7 +473,7 @@ app.post('/api/bookings', async (req, res) => {
             checkOutDate: parsedCheckOut,
             hostEmail: targetEmail,
             nights: nights || 1,
-            totalPrice: totalPrice || 0,
+            totalPrice: finalTotalPrice,
             status: req.body.status || 'Confirmed',
             reviewToken,
             reviewSubmitted: false,
@@ -493,8 +515,6 @@ app.post('/api/bookings', async (req, res) => {
                     propertyImageUrl = `${cleanHost}${cleanPath}`;
                 }
             }
-
-            const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${encodeURIComponent(propertyAddress)}&zoom=14&size=600x200&maptype=roadmap&markers=color:red%7CLabel:S%7C${encodeURIComponent(propertyAddress)}&key=${process.env.GOOGLE_MAPS_API_KEY || ''}`;
 
             const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
             const reviewUrl = `${clientUrl}/review.html?token=${reviewToken}`;
@@ -550,7 +570,7 @@ app.post('/api/bookings', async (req, res) => {
                                         </tr>
                                         <tr>
                                             <td style="padding: 6px 0; font-weight: 600; color: #64748b;">Total Amount</td>
-                                            <td style="padding: 6px 0; font-weight: 700; color: #0d9488; font-size: 16px;">₹${totalPrice || 0}</td>
+                                            <td style="padding: 6px 0; font-weight: 700; color: #0d9488; font-size: 16px;">₹${finalTotalPrice}</td>
                                         </tr>
                                     </table>
                                 </div>
@@ -590,7 +610,7 @@ app.post('/api/bookings', async (req, res) => {
                                 <li><strong>Guest Email:</strong> ${email}</li>
                                 <li><strong>Guest Phone:</strong> ${phone}</li>
                                 <li><strong>Dates:</strong> ${formattedDates}</li>
-                                <li><strong>Total Amount:</strong> ₹${totalPrice || 0}</li>
+                                <li><strong>Total Amount:</strong> ₹${finalTotalPrice}</li>
                             </ul>
                         </div>
                     `
@@ -993,3 +1013,4 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`StayGuwahati Core Engine running on port ${PORT}`);
 });
+```[cite: 7]
