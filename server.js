@@ -1013,4 +1013,3 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`StayGuwahati Core Engine running on port ${PORT}`);
 });
-```[cite: 7]
