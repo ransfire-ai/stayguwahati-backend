@@ -23,7 +23,7 @@ const Homestay = require('./models/Homestay');
 const Ticket = require('./models/Ticket');
 const User = require('./models/User');
 const Booking = require('./models/Booking');
-const Message = require('./models/Message');
+const Message = require('./models/message');
 const Review = require('./models/Review');
 
 const app = express();
