@@ -12,23 +12,23 @@ const { Resend } = require('resend');
 const twilio = require('twilio');
 const cron = require('node-cron');
 
-// Initialize Resend & Twilio
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Initialize Resend & Twilio safely
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 const twilioClient = process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN 
     ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
     : null;
 
-// Models
+// Models (Fixed casing consistency)
 const Homestay = require('./models/Homestay');
 const Ticket = require('./models/Ticket');
 const User = require('./models/User');
 const Booking = require('./models/Booking');
-const Message = require('./models/message');
+const Message = require('./models/Message');
 const Review = require('./models/Review');
 
 const app = express();
 
-// CORS Configuration (Updated to support Vercel preview & production deployments)
+// CORS Configuration
 const allowedOrigins = [
     'https://stayguwahati.in',
     'https://www.stayguwahati.in',
@@ -47,7 +47,7 @@ app.use(cors({
         if (allowedOrigins.includes(origin) || isVercel) {
             return callback(null, true);
         } else {
-            return callback(null, false);
+            return callback(new Error('Not allowed by CORS'), false);
         }
     },
     credentials: true,
@@ -92,17 +92,26 @@ const upload = multer({
 });
 
 // Database Connection
-mongoose.connect(process.env.MONGODB_URI)
-    .then(() => {
-        console.log('Connected securely to MongoDB Atlas Instance.');
-        initScheduledJobs();
-    })
-    .catch(err => console.error('❌ DATABASE CONNECTION CRASHED!', err.message));
+if (!process.env.MONGODB_URI) {
+    console.error('❌ MONGODB_URI environment variable is missing!');
+} else {
+    mongoose.connect(process.env.MONGODB_URI)
+        .then(() => {
+            console.log('Connected securely to MongoDB Atlas Instance.');
+            initScheduledJobs();
+        })
+        .catch(err => console.error('❌ DATABASE CONNECTION CRASHED!', err.message));
+}
 
 // --- BACKGROUND CRON JOBS ---
 function initScheduledJobs() {
     cron.schedule('0 10 * * *', async () => {
         console.log('[CRON] Checking for completed stays to send review follow-up emails...');
+        if (!resend) {
+            console.warn('[CRON] Resend API key not configured. Skipping email dispatch.');
+            return;
+        }
+
         try {
             const today = new Date();
             today.setHours(0, 0, 0, 0);
@@ -177,6 +186,13 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
+const authorizeAdmin = (req, res, next) => {
+    if (req.user && req.user.role === 'admin') {
+        return next();
+    }
+    return res.status(403).json({ success: false, message: 'Access denied. Admin rights required.' });
+};
+
 // --- API ROUTES ---
 
 // 1. Support Ticket Route
@@ -190,14 +206,16 @@ app.post('/api/tickets', async (req, res) => {
         const newTicket = new Ticket({ subject, description, category });
         await newTicket.save();
 
-        await resend.emails.send({
-            from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
-            to: process.env.EMAIL_USER || 'support@stayguwahati.in',
-            subject: `New Support Ticket: ${subject}`,
-            text: `You have a new support request:\n\nCategory: ${category}\nDescription: ${description}`
-        });
+        if (resend) {
+            await resend.emails.send({
+                from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
+                to: process.env.EMAIL_USER || 'support@stayguwahati.in',
+                subject: `New Support Ticket: ${subject}`,
+                text: `You have a new support request:\n\nCategory: ${category}\nDescription: ${description}`
+            });
+        }
 
-        res.status(200).json({ success: true, message: 'Ticket saved and email sent!' });
+        res.status(200).json({ success: true, message: 'Ticket saved and processed successfully!' });
     } catch (err) {
         console.error("Ticket route error:", err);
         res.status(500).json({ success: false, message: 'Failed to process ticket.' });
@@ -286,12 +304,14 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
         const resetLink = `${clientUrl}/reset-password?token=${resetToken}`;
 
-        await resend.emails.send({
-            from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
-            to: user.email,
-            subject: 'Password Reset Request - StayGuwahati',
-            html: `<h3>Password Reset</h3><p>Click the link below to reset your password (valid for 1 hour):</p><a href="${resetLink}">${resetLink}</a>`
-        });
+        if (resend) {
+            await resend.emails.send({
+                from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
+                to: user.email,
+                subject: 'Password Reset Request - StayGuwahati',
+                html: `<h3>Password Reset</h3><p>Click the link below to reset your password (valid for 1 hour):</p><a href="${resetLink}">${resetLink}</a>`
+            });
+        }
 
         res.status(200).json({ success: true, message: "Reset link sent to your email!" });
     } catch (error) {
@@ -403,12 +423,10 @@ app.post('/api/bookings', async (req, res) => {
             property = await Homestay.findById(targetHomestayId);
         }
 
-        // Fallback: If property ID is invalid or not found, grab the first available property in DB
         if (!property) {
             property = await Homestay.findOne({});
         }
 
-        // Ultimate Fallback: If database has zero properties, create a default one on the fly
         if (!property) {
             property = await Homestay.create({
                 title: propertyName || 'Green Villa',
@@ -428,16 +446,18 @@ app.post('/api/bookings', async (req, res) => {
         let parsedCheckIn = checkIn ? new Date(checkIn) : new Date();
         let parsedCheckOut = checkOut ? new Date(checkOut) : new Date(Date.now() + 86400000);
 
-        if ((!checkIn || isNaN(parsedCheckIn)) && dates && dates.includes('to')) {
+        if ((!checkIn || isNaN(parsedCheckIn.getTime())) && dates && dates.includes('to')) {
             const parts = dates.split('to').map(s => s.trim());
             const d1 = new Date(parts[0]);
             const d2 = new Date(parts[1]);
-            if (!isNaN(d1)) parsedCheckIn = d1;
-            if (!isNaN(d2)) parsedCheckOut = d2;
+            if (!isNaN(d1.getTime())) parsedCheckIn = d1;
+            if (!isNaN(d2.getTime())) parsedCheckOut = d2;
         }
 
-        if (isNaN(parsedCheckIn)) parsedCheckIn = new Date();
-        if (isNaN(parsedCheckOut)) parsedCheckOut = new Date(Date.now() + 86400000);
+        if (isNaN(parsedCheckIn.getTime())) parsedCheckIn = new Date();
+        if (isNaN(parsedCheckOut.getTime()) || parsedCheckOut <= parsedCheckIn) {
+            parsedCheckOut = new Date(parsedCheckIn.getTime() + 86400000);
+        }
 
         const formattedDates = dates || `${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]}`;
         const formattedPropertyName = propertyName || property.title || property.propertyName || 'Green Villa';
@@ -475,143 +495,132 @@ app.post('/api/bookings', async (req, res) => {
         await newBooking.save();
 
         // --- 5. Async Email Dispatch (Non-blocking) ---
-        const emailPromises = [];
+        if (resend) {
+            const emailPromises = [];
 
-        if (email) {
-            const backendHost = process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com';
-            const cleanHost = backendHost.replace(/\/$/, '').replace(/^http:\/\//i, 'https://');
+            if (email) {
+                const backendHost = process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com';
+                const cleanHost = backendHost.replace(/\/$/, '').replace(/^http:\/\//i, 'https://');
 
-            let propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`;
+                let propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`;
 
-            let rawImage = null;
-            if (Array.isArray(property.images) && property.images.length > 0) {
-                rawImage = property.images[0];
-            } else if (Array.isArray(property.photos) && property.photos.length > 0) {
-                rawImage = property.photos[0];
-            } else {
-                rawImage = property.imageUrl || property.image || property.coverImage;
-            }
-
-            if (typeof rawImage === 'object' && rawImage !== null) {
-                rawImage = rawImage.url || rawImage.path || rawImage.secure_url || '';
-            }
-
-            if (typeof rawImage === 'string' && rawImage.trim() !== '') {
-                const trimmedImg = rawImage.trim();
-
-                if (trimmedImg.startsWith('data:image/')) {
-                    propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`;
-                } else if (trimmedImg.startsWith('http://') || trimmedImg.startsWith('https://')) {
-                    propertyImageUrl = trimmedImg.replace(/^http:\/\//i, 'https://');
+                let rawImage = null;
+                if (Array.isArray(property.images) && property.images.length > 0) {
+                    rawImage = property.images[0];
+                } else if (Array.isArray(property.photos) && property.photos.length > 0) {
+                    rawImage = property.photos[0];
                 } else {
-                    const cleanPath = trimmedImg.startsWith('/') ? trimmedImg : `/${trimmedImg}`;
-                    propertyImageUrl = `${cleanHost}${cleanPath}`;
+                    rawImage = property.imageUrl || property.image || property.coverImage;
                 }
-            }
 
-            const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
-            const reviewUrl = `${clientUrl}/review?token=${reviewToken}`;
+                if (typeof rawImage === 'object' && rawImage !== null) {
+                    rawImage = rawImage.url || rawImage.path || rawImage.secure_url || '';
+                }
 
-            emailPromises.push(
-                resend.emails.send({
-                    from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
-                    to: email.toLowerCase(),
-                    subject: `Booking Confirmed: ${formattedPropertyName}`,
-                    html: `
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                        <meta charset="utf-8">
-                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    </head>
-                    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; margin: 0; padding: 20px 10px;">
-                        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
-                            
-                            <div style="background-color: #0d9488; padding: 20px 24px; text-align: center;">
-                                <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">StayGuwahati</h1>
-                            </div>
+                if (typeof rawImage === 'string' && rawImage.trim() !== '') {
+                    const trimmedImg = rawImage.trim();
 
-                            <div style="padding: 28px 24px;">
-                                <div style="display: inline-block; background-color: #ccfbf1; color: #0f766e; padding: 6px 14px; border-radius: 20px; font-weight: 600; font-size: 13px; margin-bottom: 12px;">
-                                    ✓ Booking Confirmed
+                    if (trimmedImg.startsWith('data:image/')) {
+                        propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`;
+                    } else if (trimmedImg.startsWith('http://') || trimmedImg.startsWith('https://')) {
+                        propertyImageUrl = trimmedImg.replace(/^http:\/\//i, 'https://');
+                    } else {
+                        const cleanPath = trimmedImg.startsWith('/') ? trimmedImg : `/${trimmedImg}`;
+                        propertyImageUrl = `${cleanHost}${cleanPath}`;
+                    }
+                }
+
+                const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
+                const reviewUrl = `${clientUrl}/review?token=${reviewToken}`;
+
+                emailPromises.push(
+                    resend.emails.send({
+                        from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
+                        to: email.toLowerCase(),
+                        subject: `Booking Confirmed: ${formattedPropertyName}`,
+                        html: `
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                            <meta charset="utf-8">
+                            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        </head>
+                        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; margin: 0; padding: 20px 10px;">
+                            <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+                                <div style="background-color: #0d9488; padding: 20px 24px; text-align: center;">
+                                    <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">StayGuwahati</h1>
                                 </div>
-                                
-                                <h2 style="color: #0f172a; margin: 0 0 6px 0; font-size: 22px;">Hi ${firstName} ${lastName},</h2>
-                                <p style="color: #475569; margin: 0 0 20px 0; font-size: 15px; line-height: 1.5;">
-                                    Your reservation for <strong>${formattedPropertyName}</strong> is all set!
-                                </p>
-
-                                <div style="border-radius: 10px; overflow: hidden; margin-bottom: 20px; border: 1px solid #e2e8f0; background-color: #f8fafc;">
-                                    <img src="${propertyImageUrl}" 
-                                         alt="${formattedPropertyName}" 
-                                         style="width: 100%; height: 220px; object-fit: cover; display: block; border: 0;" />
-                                    <div style="padding: 12px 16px; background-color: #ffffff; border-top: 1px solid #f1f5f9;">
-                                        <h3 style="margin: 0; font-size: 17px; color: #0f172a; font-weight: 700;">${formattedPropertyName}</h3>
-                                        <p style="margin: 4px 0 0 0; font-size: 13px; color: #64748b;">📍 ${propertyAddress}</p>
+                                <div style="padding: 28px 24px;">
+                                    <div style="display: inline-block; background-color: #ccfbf1; color: #0f766e; padding: 6px 14px; border-radius: 20px; font-weight: 600; font-size: 13px; margin-bottom: 12px;">
+                                        ✓ Booking Confirmed
+                                    </div>
+                                    <h2 style="color: #0f172a; margin: 0 0 6px 0; font-size: 22px;">Hi ${firstName} ${lastName},</h2>
+                                    <p style="color: #475569; margin: 0 0 20px 0; font-size: 15px; line-height: 1.5;">
+                                        Your reservation for <strong>${formattedPropertyName}</strong> is all set!
+                                    </p>
+                                    <div style="border-radius: 10px; overflow: hidden; margin-bottom: 20px; border: 1px solid #e2e8f0; background-color: #f8fafc;">
+                                        <img src="${propertyImageUrl}" alt="${formattedPropertyName}" style="width: 100%; height: 220px; object-fit: cover; display: block; border: 0;" />
+                                        <div style="padding: 12px 16px; background-color: #ffffff; border-top: 1px solid #f1f5f9;">
+                                            <h3 style="margin: 0; font-size: 17px; color: #0f172a; font-weight: 700;">${formattedPropertyName}</h3>
+                                            <p style="margin: 4px 0 0 0; font-size: 13px; color: #64748b;">📍 ${propertyAddress}</p>
+                                        </div>
+                                    </div>
+                                    <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px; margin-bottom: 20px;">
+                                        <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #334155;">
+                                            <tr>
+                                                <td style="padding: 6px 0; font-weight: 600; color: #64748b; width: 35%;">Dates</td>
+                                                <td style="padding: 6px 0; font-weight: 600; color: #0f172a;">${formattedDates}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="padding: 6px 0; font-weight: 600; color: #64748b;">Nights</td>
+                                                <td style="padding: 6px 0; font-weight: 500;">${nights || 1} ${nights === 1 ? 'night' : 'nights'}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="padding: 6px 0; font-weight: 600; color: #64748b;">Total Amount</td>
+                                                <td style="padding: 6px 0; font-weight: 700; color: #0d9488; font-size: 16px;">₹${finalTotalPrice}</td>
+                                            </tr>
+                                        </table>
+                                    </div>
+                                    <div style="text-align: center; margin-bottom: 24px;">
+                                        <a href="${googleMapsUrl}" target="_blank" style="background-color: #0d9488; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 15px;">Get Directions to Property</a>
+                                    </div>
+                                    <div style="text-align: center; margin-bottom: 24px;">
+                                        <a href="${reviewUrl}" style="background-color: #0f766e; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 14px;">Leave a Review After Your Stay</a>
                                     </div>
                                 </div>
-
-                                <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px; margin-bottom: 20px;">
-                                    <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #334155;">
-                                        <tr>
-                                            <td style="padding: 6px 0; font-weight: 600; color: #64748b; width: 35%;">Dates</td>
-                                            <td style="padding: 6px 0; font-weight: 600; color: #0f172a;">${formattedDates}</td>
-                                        </tr>
-                                        <tr>
-                                            <td style="padding: 6px 0; font-weight: 600; color: #64748b;">Nights</td>
-                                            <td style="padding: 6px 0; font-weight: 500;">${nights || 1} ${nights === 1 ? 'night' : 'nights'}</td>
-                                        </tr>
-                                        <tr>
-                                            <td style="padding: 6px 0; font-weight: 600; color: #64748b;">Total Amount</td>
-                                            <td style="padding: 6px 0; font-weight: 700; color: #0d9488; font-size: 16px;">₹${finalTotalPrice}</td>
-                                        </tr>
-                                    </table>
-                                </div>
-
-                                <div style="text-align: center; margin-bottom: 24px;">
-                                    <a href="${googleMapsUrl}" target="_blank" style="background-color: #0d9488; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 15px;">
-                                        Get Directions to Property
-                                    </a>
-                                </div>
-
-                                <div style="text-align: center; margin-bottom: 24px;">
-                                    <a href="${reviewUrl}" style="background-color: #0f766e; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 14px;">
-                                        Leave a Review After Your Stay
-                                    </a>
-                                </div>
                             </div>
-                        </div>
-                    </body>
-                    </html>
-                    `
-                }).catch(err => console.error("Guest email dispatch error:", err.message))
-            );
-        }
+                        </body>
+                        </html>
+                        `
+                    }).catch(err => console.error("Guest email dispatch error:", err.message))
+                );
+            }
 
-        if (targetEmail) {
-            emailPromises.push(
-                resend.emails.send({
-                    from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
-                    to: targetEmail, 
-                    subject: 'New Booking Request for ' + formattedPropertyName,
-                    html: `
-                        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
-                            <h2>New Booking Received</h2>
-                            <p>You have received a new booking for <strong>${formattedPropertyName}</strong>.</p>
-                            <ul>
-                                <li><strong>Guest Name:</strong> ${firstName} ${lastName}</li>
-                                <li><strong>Guest Email:</strong> ${email}</li>
-                                <li><strong>Guest Phone:</strong> ${phone}</li>
-                                <li><strong>Dates:</strong> ${formattedDates}</li>
-                                <li><strong>Total Amount:</strong> ₹${finalTotalPrice}</li>
-                            </ul>
-                        </div>
-                    `
-                }).catch(err => console.error("Host email dispatch error:", err.message))
-            );
-        }
+            if (targetEmail) {
+                emailPromises.push(
+                    resend.emails.send({
+                        from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
+                        to: targetEmail, 
+                        subject: 'New Booking Request for ' + formattedPropertyName,
+                        html: `
+                            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
+                                <h2>New Booking Received</h2>
+                                <p>You have received a new booking for <strong>${formattedPropertyName}</strong>.</p>
+                                <ul>
+                                    <li><strong>Guest Name:</strong> ${firstName} ${lastName}</li>
+                                    <li><strong>Guest Email:</strong> ${email}</li>
+                                    <li><strong>Guest Phone:</strong> ${phone}</li>
+                                    <li><strong>Dates:</strong> ${formattedDates}</li>
+                                    <li><strong>Total Amount:</strong> ₹${finalTotalPrice}</li>
+                                </ul>
+                            </div>
+                        `
+                    }).catch(err => console.error("Host email dispatch error:", err.message))
+                );
+            }
 
-        await Promise.all(emailPromises);
+            await Promise.all(emailPromises);
+        }
 
         return res.status(200).json({
             success: true,
@@ -669,8 +678,16 @@ app.get('/api/reviews', async (req, res) => {
         const { propertyId } = req.query;
         let filter = {};
 
-        if (propertyId && mongoose.Types.ObjectId.isValid(propertyId)) {
-            filter.propertyId = propertyId;
+        if (propertyId) {
+            const cleanPropertyId = propertyId.toString().trim();
+            
+            if (mongoose.Types.ObjectId.isValid(cleanPropertyId)) {
+                filter.propertyId = {
+                    $in: [cleanPropertyId, new mongoose.Types.ObjectId(cleanPropertyId)]
+                };
+            } else {
+                filter.propertyId = cleanPropertyId;
+            }
         }
 
         const reviews = await Review.find(filter).sort({ createdAt: -1 });
@@ -685,7 +702,6 @@ app.get('/api/reviews', async (req, res) => {
         res.status(500).json({ success: false, message: "Error fetching reviews." });
     }
 });
-
 // 4.3 Post-Stay Review Submission Route
 app.post('/api/reviews', async (req, res) => {
     try {
@@ -1009,7 +1025,7 @@ app.delete('/api/homestays/:id', authenticateToken, async (req, res) => {
     }
 });
 
-app.patch('/api/admin/homestays/:id/status', authenticateToken, async (req, res) => {
+app.patch('/api/admin/homestays/:id/status', authenticateToken, authorizeAdmin, async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ success: false, message: "Invalid Property ID format" });
