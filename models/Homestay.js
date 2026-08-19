@@ -64,6 +64,7 @@ const homestaySchema = new mongoose.Schema({
             index: true 
         },
         phone: { type: String, required: true },
+        avatar: { type: String, trim: true, default: '' },
         isVerified: { type: Boolean, default: false }
     },
     isAvailable: { 
@@ -96,6 +97,11 @@ homestaySchema.virtual('image').get(function() {
 // Virtual helper so p.hostEmail works on the frontend
 homestaySchema.virtual('hostEmail').get(function() {
     return this.host ? this.host.email : null;
+});
+
+// Virtual helper so p.hostAvatar works on the frontend
+homestaySchema.virtual('hostAvatar').get(function() {
+    return this.host ? this.host.avatar : null;
 });
 
 module.exports = mongoose.model('Homestay', homestaySchema);
