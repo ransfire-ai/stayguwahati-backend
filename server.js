@@ -702,6 +702,7 @@ app.get('/api/reviews', async (req, res) => {
         res.status(500).json({ success: false, message: "Error fetching reviews." });
     }
 });
+
 // 4.3 Post-Stay Review Submission Route
 app.post('/api/reviews', async (req, res) => {
     try {
@@ -860,7 +861,7 @@ app.post('/api/messages/webhook', async (req, res) => {
     }
 });
 
-// 5. File Upload
+// 5. File Upload (Updated)
 app.post('/api/upload-images', (req, res) => {
     upload.array('photos', 3)(req, res, (err) => {
         if (err instanceof multer.MulterError) {
@@ -873,7 +874,12 @@ app.post('/api/upload-images', (req, res) => {
             return res.status(400).json({ success: false, message: 'No images uploaded.' });
         }
 
-        const filePaths = req.files.map(file => `/uploads/${file.filename}`);
+        const backendHost = (process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com')
+            .replace(/\/$/, '')
+            .replace(/^http:\/\//i, 'https://');
+
+        // Prepend host URL so frontend gets absolute web URLs
+        const filePaths = req.files.map(file => `${backendHost}/uploads/${file.filename}`);
         res.status(200).json({ success: true, images: filePaths });
     });
 });
@@ -951,7 +957,8 @@ app.get('/api/homestays/:id/image', async (req, res) => {
         }
 
         if (typeof rawImage === 'string' && rawImage.trim().length > 0) {
-            const trimmed = rawImage.trim();
+            let trimmed = rawImage.trim().replace(/\\/g, '/'); // Clean Windows backslashes
+            
             if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
                 return res.redirect(trimmed);
             }
