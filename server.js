@@ -1,34 +1,34 @@
-require('dotenv').config();
-const crypto = require('crypto');
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { Resend } = require('resend');
-const twilio = require('twilio');
-const cron = require('node-cron');
+require('dotenv').config(); //[cite: 7]
+const crypto = require('crypto'); //[cite: 7]
+const express = require('express'); //[cite: 7]
+const mongoose = require('mongoose'); //[cite: 7]
+const cors = require('cors'); //[cite: 7]
+const multer = require('multer'); //[cite: 7]
+const path = require('path'); //[cite: 7]
+const fs = require('fs'); //[cite: 7]
+const bcrypt = require('bcryptjs'); //[cite: 7]
+const jwt = require('jsonwebtoken'); //[cite: 7]
+const { Resend } = require('resend'); //[cite: 7]
+const twilio = require('twilio'); //[cite: 7]
+const cron = require('node-cron'); //[cite: 7]
 
-// Initialize Resend & Twilio safely
-const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+// Initialize Resend & Twilio safely[cite: 7]
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null; //[cite: 7]
 const twilioClient = process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN 
-    ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
-    : null;
+    ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN) //[cite: 7]
+    : null; //[cite: 7]
 
-// Models (Fixed casing consistency)
-const Homestay = require('./models/Homestay');
-const Ticket = require('./models/Ticket');
-const User = require('./models/User');
-const Booking = require('./models/Booking');
-const Message = require('./models/message');
-const Review = require('./models/Review');
+// Models[cite: 7]
+const Homestay = require('./models/Homestay'); //[cite: 7]
+const Ticket = require('./models/Ticket'); //[cite: 7]
+const User = require('./models/User'); //[cite: 7]
+const Booking = require('./models/Booking'); //[cite: 7]
+const Message = require('./models/message'); //[cite: 7]
+const Review = require('./models/Review'); //[cite: 7]
 
-const app = express();
+const app = express(); //[cite: 7]
 
-// CORS Configuration
+// CORS Configuration[cite: 7]
 const allowedOrigins = [
     'https://stayguwahati.in',
     'https://www.stayguwahati.in',
@@ -38,7 +38,7 @@ const allowedOrigins = [
     'http://localhost:5173',
     'http://localhost:5500',
     'http://127.0.0.1:5500'
-];
+]; //[cite: 7]
 
 app.use(cors({
     origin: function (origin, callback) {
@@ -53,82 +53,87 @@ app.use(cors({
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
-}));
+})); //[cite: 7]
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// --- INCREASED PAYLOAD LIMITS (100MB) ---
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
-// Ensure uploads folder exists dynamically
-const uploadDir = path.join(__dirname, 'uploads');
+// Ensure uploads folder exists dynamically[cite: 7]
+const uploadDir = path.join(__dirname, 'uploads'); //[cite: 7]
 if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
+    fs.mkdirSync(uploadDir, { recursive: true }); //[cite: 7]
 }
 
-// Expose static files
-app.use('/uploads', express.static(uploadDir));
+// Expose static files[cite: 7]
+app.use('/uploads', express.static(uploadDir)); //[cite: 7]
 
-// --- MULTER STORAGE SETUP ---
+// --- MULTER STORAGE SETUP ---[cite: 7]
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, uploadDir);
+        cb(null, uploadDir); //[cite: 7]
     },
     filename: (req, file, cb) => {
-        cb(null, Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname));
+        cb(null, Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname)); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
 const fileFilter = (req, file, cb) => {
     if (file.mimetype.startsWith('image/')) {
-        cb(null, true);
+        cb(null, true); //[cite: 7]
     } else {
-        cb(new Error('Only image files (JPG, PNG, WebP) are allowed!'), false);
+        cb(new Error('Only image files (JPG, PNG, WebP) are allowed!'), false); //[cite: 7]
     }
-};
+}; //[cite: 7]
 
+// --- INCREASED MULTER FILE & FIELD SIZE LIMITS (50MB) ---
 const upload = multer({
     storage: storage,
     fileFilter: fileFilter,
-    limits: { fileSize: 5 * 1024 * 1024 }
+    limits: { 
+        fileSize: 50 * 1024 * 1024, // 50MB per file
+        fieldSize: 50 * 1024 * 1024  // 50MB per text field
+    }
 });
 
-// Database Connection
+// Database Connection[cite: 7]
 if (!process.env.MONGODB_URI) {
-    console.error('❌ MONGODB_URI environment variable is missing!');
+    console.error('❌ MONGODB_URI environment variable is missing!'); //[cite: 7]
 } else {
-    mongoose.connect(process.env.MONGODB_URI)
+    mongoose.connect(process.env.MONGODB_URI) //[cite: 7]
         .then(() => {
-            console.log('Connected securely to MongoDB Atlas Instance.');
-            initScheduledJobs();
+            console.log('Connected securely to MongoDB Atlas Instance.'); //[cite: 7]
+            initScheduledJobs(); //[cite: 7]
         })
-        .catch(err => console.error('❌ DATABASE CONNECTION CRASHED!', err.message));
+        .catch(err => console.error('❌ DATABASE CONNECTION CRASHED!', err.message)); //[cite: 7]
 }
 
-// --- BACKGROUND CRON JOBS ---
+// --- BACKGROUND CRON JOBS ---[cite: 7]
 function initScheduledJobs() {
     cron.schedule('0 10 * * *', async () => {
-        console.log('[CRON] Checking for completed stays to send review follow-up emails...');
+        console.log('[CRON] Checking for completed stays to send review follow-up emails...'); //[cite: 7]
         if (!resend) {
-            console.warn('[CRON] Resend API key not configured. Skipping email dispatch.');
-            return;
+            console.warn('[CRON] Resend API key not configured. Skipping email dispatch.'); //[cite: 7]
+            return; //[cite: 7]
         }
 
         try {
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
+            const today = new Date(); //[cite: 7]
+            today.setHours(0, 0, 0, 0); //[cite: 7]
 
             const completedBookings = await Booking.find({
                 checkOutDate: { $lt: today },
                 reviewEmailSent: { $ne: true },
                 status: { $nin: ['cancelled', 'rejected'] }
-            });
+            }); //[cite: 7]
 
             for (const booking of completedBookings) {
                 if (!booking.reviewToken) {
-                    booking.reviewToken = crypto.randomBytes(32).toString('hex');
+                    booking.reviewToken = crypto.randomBytes(32).toString('hex'); //[cite: 7]
                 }
 
-                const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
-                const reviewUrl = `${clientUrl}/review?token=${booking.reviewToken}`;
+                const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in'; //[cite: 7]
+                const reviewUrl = `${clientUrl}/review?token=${booking.reviewToken}`; //[cite: 7]
 
                 await resend.emails.send({
                     from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
@@ -154,57 +159,57 @@ function initScheduledJobs() {
                         </body>
                         </html>
                     `
-                });
+                }); //[cite: 7]
 
-                booking.reviewEmailSent = true;
-                await booking.save();
-                console.log(`[CRON] Review follow-up email sent to ${booking.email}`);
+                booking.reviewEmailSent = true; //[cite: 7]
+                await booking.save(); //[cite: 7]
+                console.log(`[CRON] Review follow-up email sent to ${booking.email}`); //[cite: 7]
             }
         } catch (error) {
-            console.error('[CRON] Error sending review follow-up emails:', error);
+            console.error('[CRON] Error sending review follow-up emails:', error); //[cite: 7]
         }
-    });
+    }); //[cite: 7]
 }
 
-// --- AUTHENTICATION MIDDLEWARE ---
+// --- AUTHENTICATION MIDDLEWARE ---[cite: 7]
 const authenticateToken = (req, res, next) => {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
+    const authHeader = req.headers['authorization']; //[cite: 7]
+    const token = authHeader && authHeader.split(' ')[1]; //[cite: 7]
 
     if (!token) {
-        return res.status(401).json({ success: false, message: 'Access denied. Token missing.' });
+        return res.status(401).json({ success: false, message: 'Access denied. Token missing.' }); //[cite: 7]
     }
 
-    const jwtSecret = process.env.JWT_SECRET || 'stayguwahati_jwt_super_secret_key_2026';
+    const jwtSecret = process.env.JWT_SECRET || 'stayguwahati_jwt_super_secret_key_2026'; //[cite: 7]
 
     jwt.verify(token, jwtSecret, (err, user) => {
         if (err) {
-            return res.status(403).json({ success: false, message: 'Invalid or expired token.' });
+            return res.status(403).json({ success: false, message: 'Invalid or expired token.' }); //[cite: 7]
         }
-        req.user = user;
-        next();
+        req.user = user; //[cite: 7]
+        next(); //[cite: 7]
     });
-};
+}; //[cite: 7]
 
 const authorizeAdmin = (req, res, next) => {
     if (req.user && req.user.role === 'admin') {
-        return next();
+        return next(); //[cite: 7]
     }
-    return res.status(403).json({ success: false, message: 'Access denied. Admin rights required.' });
-};
+    return res.status(403).json({ success: false, message: 'Access denied. Admin rights required.' }); //[cite: 7]
+}; //[cite: 7]
 
-// --- API ROUTES ---
+// --- API ROUTES ---[cite: 7]
 
-// 1. Support Ticket Route
+// 1. Support Ticket Route[cite: 7]
 app.post('/api/tickets', async (req, res) => {
     try {
-        const { subject, description, category } = req.body;
+        const { subject, description, category } = req.body; //[cite: 7]
         if (!subject || !description) {
-            return res.status(400).json({ success: false, message: 'Subject and description are required.' });
+            return res.status(400).json({ success: false, message: 'Subject and description are required.' }); //[cite: 7]
         }
 
-        const newTicket = new Ticket({ subject, description, category });
-        await newTicket.save();
+        const newTicket = new Ticket({ subject, description, category }); //[cite: 7]
+        await newTicket.save(); //[cite: 7]
 
         if (resend) {
             await resend.emails.send({
@@ -212,37 +217,37 @@ app.post('/api/tickets', async (req, res) => {
                 to: process.env.EMAIL_USER || 'support@stayguwahati.in',
                 subject: `New Support Ticket: ${subject}`,
                 text: `You have a new support request:\n\nCategory: ${category}\nDescription: ${description}`
-            });
+            }); //[cite: 7]
         }
 
-        res.status(200).json({ success: true, message: 'Ticket saved and processed successfully!' });
+        res.status(200).json({ success: true, message: 'Ticket saved and processed successfully!' }); //[cite: 7]
     } catch (err) {
-        console.error("Ticket route error:", err);
-        res.status(500).json({ success: false, message: 'Failed to process ticket.' });
+        console.error("Ticket route error:", err); //[cite: 7]
+        res.status(500).json({ success: false, message: 'Failed to process ticket.' }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
-// 2. Authentication: Login
+// 2. Authentication: Login[cite: 7]
 app.post('/api/auth/login', async (req, res) => {
-    const { email, password } = req.body;
+    const { email, password } = req.body; //[cite: 7]
     try {
         if (!email || !password) {
-            return res.status(400).json({ success: false, message: "Email and password are required." });
+            return res.status(400).json({ success: false, message: "Email and password are required." }); //[cite: 7]
         }
 
-        const user = await User.findOne({ email: email.toLowerCase() });
-        if (!user) return res.status(400).json({ success: false, message: "Invalid credentials." });
+        const user = await User.findOne({ email: email.toLowerCase() }); //[cite: 7]
+        if (!user) return res.status(400).json({ success: false, message: "Invalid credentials." }); //[cite: 7]
 
-        const isMatch = await bcrypt.compare(password, user.passwordHash);
-        if (!isMatch) return res.status(400).json({ success: false, message: "Invalid credentials." });
+        const isMatch = await bcrypt.compare(password, user.passwordHash); //[cite: 7]
+        if (!isMatch) return res.status(400).json({ success: false, message: "Invalid credentials." }); //[cite: 7]
 
-        const jwtSecret = process.env.JWT_SECRET || 'stayguwahati_jwt_super_secret_key_2026';
+        const jwtSecret = process.env.JWT_SECRET || 'stayguwahati_jwt_super_secret_key_2026'; //[cite: 7]
 
         const token = jwt.sign(
             { userId: user._id, email: user.email, role: user.role },
             jwtSecret,
             { expiresIn: '7d' }
-        );
+        ); //[cite: 7]
 
         res.status(200).json({
             success: true,
@@ -253,56 +258,56 @@ app.post('/api/auth/login', async (req, res) => {
                 email: user.email,
                 role: user.role
             }
-        });
+        }); //[cite: 7]
     } catch (error) {
-        console.error("Login error:", error);
-        res.status(500).json({ success: false, message: error.message || "Auth error." });
+        console.error("Login error:", error); //[cite: 7]
+        res.status(500).json({ success: false, message: error.message || "Auth error." }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
-// 3. Authentication: Register
+// 3. Authentication: Register[cite: 7]
 app.post('/api/auth/register', async (req, res) => {
-    const { name, email, password } = req.body;
+    const { name, email, password } = req.body; //[cite: 7]
     try {
         if (!email || !password || !name) {
-            return res.status(400).json({ success: false, message: "Name, email, and password are required." });
+            return res.status(400).json({ success: false, message: "Name, email, and password are required." }); //[cite: 7]
         }
 
-        const existingUser = await User.findOne({ email: email.toLowerCase() });
-        if (existingUser) return res.status(400).json({ success: false, message: "User already exists." });
+        const existingUser = await User.findOne({ email: email.toLowerCase() }); //[cite: 7]
+        if (existingUser) return res.status(400).json({ success: false, message: "User already exists." }); //[cite: 7]
 
-        const salt = await bcrypt.genSalt(10);
-        const passwordHash = await bcrypt.hash(password, salt);
+        const salt = await bcrypt.genSalt(10); //[cite: 7]
+        const passwordHash = await bcrypt.hash(password, salt); //[cite: 7]
 
-        await User.create({ name, email: email.toLowerCase(), passwordHash });
-        res.status(201).json({ success: true, message: "Registration successful!" });
+        await User.create({ name, email: email.toLowerCase(), passwordHash }); //[cite: 7]
+        res.status(201).json({ success: true, message: "Registration successful!" }); //[cite: 7]
     } catch (error) {
-        console.error("Register error:", error);
-        res.status(500).json({ success: false, message: "Server error." });
+        console.error("Register error:", error); //[cite: 7]
+        res.status(500).json({ success: false, message: "Server error." }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
-// 3.5 Authentication: Forgot Password
+// 3.5 Authentication: Forgot Password[cite: 7]
 app.post('/api/auth/forgot-password', async (req, res) => {
     try {
-        const { email } = req.body;
+        const { email } = req.body; //[cite: 7]
         if (!email) {
-            return res.status(400).json({ success: false, message: "Email is required." });
+            return res.status(400).json({ success: false, message: "Email is required." }); //[cite: 7]
         }
 
-        const user = await User.findOne({ email: email.toLowerCase() });
+        const user = await User.findOne({ email: email.toLowerCase() }); //[cite: 7]
         
         if (!user) {
-            return res.status(200).json({ success: true, message: "If your email is registered, a reset link has been sent." });
+            return res.status(200).json({ success: true, message: "If your email is registered, a reset link has been sent." }); //[cite: 7]
         }
 
-        const resetToken = crypto.randomBytes(32).toString('hex');
-        user.resetToken = resetToken;
-        user.resetTokenExpiry = Date.now() + 3600000;
-        await user.save();
+        const resetToken = crypto.randomBytes(32).toString('hex'); //[cite: 7]
+        user.resetToken = resetToken; //[cite: 7]
+        user.resetTokenExpiry = Date.now() + 3600000; //[cite: 7]
+        await user.save(); //[cite: 7]
 
-        const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
-        const resetLink = `${clientUrl}/reset-password?token=${resetToken}`;
+        const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in'; //[cite: 7]
+        const resetLink = `${clientUrl}/reset-password?token=${resetToken}`; //[cite: 7]
 
         if (resend) {
             await resend.emails.send({
@@ -310,52 +315,52 @@ app.post('/api/auth/forgot-password', async (req, res) => {
                 to: user.email,
                 subject: 'Password Reset Request - StayGuwahati',
                 html: `<h3>Password Reset</h3><p>Click the link below to reset your password (valid for 1 hour):</p><a href="${resetLink}">${resetLink}</a>`
-            });
+            }); //[cite: 7]
         }
 
-        res.status(200).json({ success: true, message: "Reset link sent to your email!" });
+        res.status(200).json({ success: true, message: "Reset link sent to your email!" }); //[cite: 7]
     } catch (error) {
-        console.error("[RESET] ❌ Error during password reset:", error);
-        res.status(500).json({ success: false, message: "Server error during password reset." });
+        console.error("[RESET] ❌ Error during password reset:", error); //[cite: 7]
+        res.status(500).json({ success: false, message: "Server error during password reset." }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
-// 3.6 Authentication: Reset Password Complete
+// 3.6 Authentication: Reset Password Complete[cite: 7]
 app.post('/api/auth/reset-password', async (req, res) => {
     try {
-        const { token, newPassword } = req.body;
+        const { token, newPassword } = req.body; //[cite: 7]
 
         if (!token || !newPassword) {
-            return res.status(400).json({ success: false, message: "Reset token and new password are required." });
+            return res.status(400).json({ success: false, message: "Reset token and new password are required." }); //[cite: 7]
         }
 
         const user = await User.findOne({
             resetToken: token,
             resetTokenExpiry: { $gt: Date.now() }
-        });
+        }); //[cite: 7]
 
         if (!user) {
-            return res.status(400).json({ success: false, message: "Invalid or expired reset token." });
+            return res.status(400).json({ success: false, message: "Invalid or expired reset token." }); //[cite: 7]
         }
 
-        const salt = await bcrypt.genSalt(10);
-        user.passwordHash = await bcrypt.hash(newPassword, salt);
-        user.resetToken = undefined;
-        user.resetTokenExpiry = undefined;
-        await user.save();
+        const salt = await bcrypt.genSalt(10); //[cite: 7]
+        user.passwordHash = await bcrypt.hash(newPassword, salt); //[cite: 7]
+        user.resetToken = undefined; //[cite: 7]
+        user.resetTokenExpiry = undefined; //[cite: 7]
+        await user.save(); //[cite: 7]
 
-        res.status(200).json({ success: true, message: "Password reset successful! You can now log in." });
+        res.status(200).json({ success: true, message: "Password reset successful! You can now log in." }); //[cite: 7]
     } catch (error) {
-        console.error("Reset password error:", error);
-        res.status(500).json({ success: false, message: "Server error during password reset." });
+        console.error("Reset password error:", error); //[cite: 7]
+        res.status(500).json({ success: false, message: "Server error during password reset." }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
-// 4. Booking Routes
+// 4. Booking Routes[cite: 7]
 app.get('/api/bookings', async (req, res) => {
     try {
-        const { email } = req.query;
-        let query = {};
+        const { email } = req.query; //[cite: 7]
+        let query = {}; //[cite: 7]
 
         if (email) {
             query = {
@@ -363,16 +368,16 @@ app.get('/api/bookings', async (req, res) => {
                     { email: email.toLowerCase() },
                     { hostEmail: email.toLowerCase() }
                 ]
-            };
+            }; //[cite: 7]
         }
 
-        const bookings = await Booking.find(query).populate('homestayId');
-        res.json({ success: true, data: bookings });
+        const bookings = await Booking.find(query).populate('homestayId'); //[cite: 7]
+        res.json({ success: true, data: bookings }); //[cite: 7]
     } catch (err) {
-        console.error("Fetch bookings error:", err);
-        res.status(500).json({ success: false, message: "Error loading bookings" });
+        console.error("Fetch bookings error:", err); //[cite: 7]
+        res.status(500).json({ success: false, message: "Error loading bookings" }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
 app.post('/api/bookings', async (req, res) => {
     try {
@@ -391,40 +396,40 @@ app.post('/api/bookings', async (req, res) => {
             nights,
             totalPrice,
             totalAmount
-        } = req.body;
+        } = req.body; //[cite: 7]
 
-        // --- 1. Robust Guest Info Parsing ---
+        // --- 1. Robust Guest Info Parsing ---[cite: 7]
         if (guestInfo) {
-            if (!email && guestInfo.email) email = guestInfo.email;
-            if (!phone && guestInfo.phone) phone = guestInfo.phone;
+            if (!email && guestInfo.email) email = guestInfo.email; //[cite: 7]
+            if (!phone && guestInfo.phone) phone = guestInfo.phone; //[cite: 7]
             if (!firstName && !lastName && guestInfo.fullName) {
-                const parts = guestInfo.fullName.trim().split(' ');
-                firstName = parts[0] || 'Valued';
-                lastName = parts.slice(1).join(' ') || 'Guest';
+                const parts = guestInfo.fullName.trim().split(' '); //[cite: 7]
+                firstName = parts[0] || 'Valued'; //[cite: 7]
+                lastName = parts.slice(1).join(' ') || 'Guest'; //[cite: 7]
             }
         }
 
         if ((!firstName || !lastName) && req.body.fullName) {
-            const parts = req.body.fullName.trim().split(' ');
-            firstName = firstName || parts[0] || 'Valued';
-            lastName = lastName || parts.slice(1).join(' ') || 'Guest';
+            const parts = req.body.fullName.trim().split(' '); //[cite: 7]
+            firstName = firstName || parts[0] || 'Valued'; //[cite: 7]
+            lastName = lastName || parts.slice(1).join(' ') || 'Guest'; //[cite: 7]
         }
 
-        firstName = firstName || 'Valued';
-        lastName = lastName || 'Guest';
-        email = email || 'guest@stayguwahati.in';
-        phone = phone || '9876543210';
+        firstName = firstName || 'Valued'; //[cite: 7]
+        lastName = lastName || 'Guest'; //[cite: 7]
+        email = email || 'guest@stayguwahati.in'; //[cite: 7]
+        phone = phone || '9876543210'; //[cite: 7]
 
-        // --- 2. Flexible Property & ID Resolution ---
-        let targetHomestayId = homestayId || propertyId || req.body.id;
-        let property = null;
+        // --- 2. Flexible Property & ID Resolution ---[cite: 7]
+        let targetHomestayId = homestayId || propertyId || req.body.id; //[cite: 7]
+        let property = null; //[cite: 7]
 
         if (targetHomestayId && mongoose.Types.ObjectId.isValid(targetHomestayId)) {
-            property = await Homestay.findById(targetHomestayId);
+            property = await Homestay.findById(targetHomestayId); //[cite: 7]
         }
 
         if (!property) {
-            property = await Homestay.findOne({});
+            property = await Homestay.findOne({}); //[cite: 7]
         }
 
         if (!property) {
@@ -434,43 +439,43 @@ app.post('/api/bookings', async (req, res) => {
                 pricePerNight: 1500,
                 status: 'approved',
                 ownerEmail: email
-            });
+            }); //[cite: 7]
         }
 
-        const validHomestayId = property._id;
-        const targetEmail = property.ownerEmail || (property.host && property.host.email) || email;
-        const propertyAddress = property.address || property.locality || 'Guwahati, Assam';
-        let googleMapsUrl = property.mapUrl || property.googleMapsLink || '';
+        const validHomestayId = property._id; //[cite: 7]
+        const targetEmail = property.ownerEmail || (property.host && property.host.email) || email; //[cite: 7]
+        const propertyAddress = property.address || property.locality || 'Guwahati, Assam'; //[cite: 7]
+        let googleMapsUrl = property.mapUrl || property.googleMapsLink || ''; //[cite: 7]
 
-        // --- 3. Date & Pricing Normalization ---
-        let parsedCheckIn = checkIn ? new Date(checkIn) : new Date();
-        let parsedCheckOut = checkOut ? new Date(checkOut) : new Date(Date.now() + 86400000);
+        // --- 3. Date & Pricing Normalization ---[cite: 7]
+        let parsedCheckIn = checkIn ? new Date(checkIn) : new Date(); //[cite: 7]
+        let parsedCheckOut = checkOut ? new Date(checkOut) : new Date(Date.now() + 86400000); //[cite: 7]
 
         if ((!checkIn || isNaN(parsedCheckIn.getTime())) && dates && dates.includes('to')) {
-            const parts = dates.split('to').map(s => s.trim());
-            const d1 = new Date(parts[0]);
-            const d2 = new Date(parts[1]);
-            if (!isNaN(d1.getTime())) parsedCheckIn = d1;
-            if (!isNaN(d2.getTime())) parsedCheckOut = d2;
+            const parts = dates.split('to').map(s => s.trim()); //[cite: 7]
+            const d1 = new Date(parts[0]); //[cite: 7]
+            const d2 = new Date(parts[1]); //[cite: 7]
+            if (!isNaN(d1.getTime())) parsedCheckIn = d1; //[cite: 7]
+            if (!isNaN(d2.getTime())) parsedCheckOut = d2; //[cite: 7]
         }
 
-        if (isNaN(parsedCheckIn.getTime())) parsedCheckIn = new Date();
+        if (isNaN(parsedCheckIn.getTime())) parsedCheckIn = new Date(); //[cite: 7]
         if (isNaN(parsedCheckOut.getTime()) || parsedCheckOut <= parsedCheckIn) {
-            parsedCheckOut = new Date(parsedCheckIn.getTime() + 86400000);
+            parsedCheckOut = new Date(parsedCheckIn.getTime() + 86400000); //[cite: 7]
         }
 
-        const formattedDates = dates || `${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]}`;
-        const formattedPropertyName = propertyName || property.title || property.propertyName || 'Green Villa';
-        const finalTotalPrice = totalPrice !== undefined ? totalPrice : (totalAmount !== undefined ? totalAmount : (property.pricePerNight || 1500));
+        const formattedDates = dates || `${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]}`; //[cite: 7]
+        const formattedPropertyName = propertyName || property.title || property.propertyName || 'Green Villa'; //[cite: 7]
+        const finalTotalPrice = totalPrice !== undefined ? totalPrice : (totalAmount !== undefined ? totalAmount : (property.pricePerNight || 1500)); //[cite: 7]
 
         if (!googleMapsUrl) {
-            const searchQuery = encodeURIComponent(`${formattedPropertyName} ${propertyAddress}`);
-            googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${searchQuery}`;
+            const searchQuery = encodeURIComponent(`${formattedPropertyName} ${propertyAddress}`); //[cite: 7]
+            googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${searchQuery}`; //[cite: 7]
         }
 
-        const reviewToken = crypto.randomBytes(32).toString('hex');
+        const reviewToken = crypto.randomBytes(32).toString('hex'); //[cite: 7]
 
-        // --- 4. Save Booking ---
+        // --- 4. Save Booking ---[cite: 7]
         const newBooking = new Booking({
             firstName,
             lastName,
@@ -490,48 +495,48 @@ app.post('/api/bookings', async (req, res) => {
             reviewToken,
             reviewSubmitted: false,
             reviewEmailSent: false
-        });
+        }); //[cite: 7]
         
-        await newBooking.save();
+        await newBooking.save(); //[cite: 7]
 
-        // --- 5. Async Email Dispatch (Non-blocking) ---
+        // --- 5. Async Email Dispatch (Non-blocking) ---[cite: 7]
         if (resend) {
-            const emailPromises = [];
+            const emailPromises = []; //[cite: 7]
 
             if (email) {
-                const backendHost = process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com';
-                const cleanHost = backendHost.replace(/\/$/, '').replace(/^http:\/\//i, 'https://');
+                const backendHost = process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com'; //[cite: 7]
+                const cleanHost = backendHost.replace(/\/$/, '').replace(/^http:\/\//i, 'https://'); //[cite: 7]
 
-                let propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`;
+                let propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`; //[cite: 7]
 
-                let rawImage = null;
+                let rawImage = null; //[cite: 7]
                 if (Array.isArray(property.images) && property.images.length > 0) {
-                    rawImage = property.images[0];
+                    rawImage = property.images[0]; //[cite: 7]
                 } else if (Array.isArray(property.photos) && property.photos.length > 0) {
-                    rawImage = property.photos[0];
+                    rawImage = property.photos[0]; //[cite: 7]
                 } else {
-                    rawImage = property.imageUrl || property.image || property.coverImage;
+                    rawImage = property.imageUrl || property.image || property.coverImage; //[cite: 7]
                 }
 
                 if (typeof rawImage === 'object' && rawImage !== null) {
-                    rawImage = rawImage.url || rawImage.path || rawImage.secure_url || '';
+                    rawImage = rawImage.url || rawImage.path || rawImage.secure_url || ''; //[cite: 7]
                 }
 
                 if (typeof rawImage === 'string' && rawImage.trim() !== '') {
-                    const trimmedImg = rawImage.trim();
+                    const trimmedImg = rawImage.trim(); //[cite: 7]
 
                     if (trimmedImg.startsWith('data:image/')) {
-                        propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`;
+                        propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`; //[cite: 7]
                     } else if (trimmedImg.startsWith('http://') || trimmedImg.startsWith('https://')) {
-                        propertyImageUrl = trimmedImg.replace(/^http:\/\//i, 'https://');
+                        propertyImageUrl = trimmedImg.replace(/^http:\/\//i, 'https://'); //[cite: 7]
                     } else {
-                        const cleanPath = trimmedImg.startsWith('/') ? trimmedImg : `/${trimmedImg}`;
-                        propertyImageUrl = `${cleanHost}${cleanPath}`;
+                        const cleanPath = trimmedImg.startsWith('/') ? trimmedImg : `/${trimmedImg}`; //[cite: 7]
+                        propertyImageUrl = `${cleanHost}${cleanPath}`; //[cite: 7]
                     }
                 }
 
-                const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
-                const reviewUrl = `${clientUrl}/review?token=${reviewToken}`;
+                const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in'; //[cite: 7]
+                const reviewUrl = `${clientUrl}/review?token=${reviewToken}`; //[cite: 7]
 
                 emailPromises.push(
                     resend.emails.send({
@@ -593,7 +598,7 @@ app.post('/api/bookings', async (req, res) => {
                         </html>
                         `
                     }).catch(err => console.error("Guest email dispatch error:", err.message))
-                );
+                ); //[cite: 7]
             }
 
             if (targetEmail) {
@@ -616,113 +621,113 @@ app.post('/api/bookings', async (req, res) => {
                             </div>
                         `
                     }).catch(err => console.error("Host email dispatch error:", err.message))
-                );
+                ); //[cite: 7]
             }
 
-            await Promise.all(emailPromises);
+            await Promise.all(emailPromises); //[cite: 7]
         }
 
         return res.status(200).json({
             success: true,
             message: "Booking saved and confirmed!",
             data: newBooking
-        });
+        }); //[cite: 7]
 
     } catch (error) {
         if (error.name === 'ValidationError') {
-            return res.status(400).json({ success: false, message: error.message });
+            return res.status(400).json({ success: false, message: error.message }); //[cite: 7]
         }
 
         if (error.code === 11000) {
             return res.status(400).json({
                 success: false,
                 message: "This homestay was just booked for these dates. Please pick another date."
-            });
+            }); //[cite: 7]
         }
 
-        res.status(500).json({ success: false, message: error.message || "Server error during booking." });
+        res.status(500).json({ success: false, message: error.message || "Server error during booking." }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
-// 4.1 Update / Cancel Booking Status
+// 4.1 Update / Cancel Booking Status[cite: 7]
 app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-            return res.status(400).json({ success: false, message: "Invalid Booking ID" });
+            return res.status(400).json({ success: false, message: "Invalid Booking ID" }); //[cite: 7]
         }
 
-        const { status } = req.body;
+        const { status } = req.body; //[cite: 7]
         if (!status) {
-            return res.status(400).json({ success: false, message: "Status field is required." });
+            return res.status(400).json({ success: false, message: "Status field is required." }); //[cite: 7]
         }
 
         const updatedBooking = await Booking.findByIdAndUpdate(
             req.params.id,
             { status },
             { new: true }
-        );
+        ); //[cite: 7]
 
         if (!updatedBooking) {
-            return res.status(404).json({ success: false, message: "Booking not found." });
+            return res.status(404).json({ success: false, message: "Booking not found." }); //[cite: 7]
         }
 
-        res.status(200).json({ success: true, message: "Booking status updated", data: updatedBooking });
+        res.status(200).json({ success: true, message: "Booking status updated", data: updatedBooking }); //[cite: 7]
     } catch (error) {
-        res.status(500).json({ success: false, message: "Server error." });
+        res.status(500).json({ success: false, message: "Server error." }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
-// 4.2 Get Reviews Route
+// 4.2 Get Reviews Route[cite: 7]
 app.get('/api/reviews', async (req, res) => {
     try {
-        const { propertyId } = req.query;
-        let filter = {};
+        const { propertyId } = req.query; //[cite: 7]
+        let filter = {}; //[cite: 7]
 
         if (propertyId) {
-            const cleanPropertyId = propertyId.toString().trim();
+            const cleanPropertyId = propertyId.toString().trim(); //[cite: 7]
             
             if (mongoose.Types.ObjectId.isValid(cleanPropertyId)) {
                 filter.propertyId = {
                     $in: [cleanPropertyId, new mongoose.Types.ObjectId(cleanPropertyId)]
-                };
+                }; //[cite: 7]
             } else {
-                filter.propertyId = cleanPropertyId;
+                filter.propertyId = cleanPropertyId; //[cite: 7]
             }
         }
 
-        const reviews = await Review.find(filter).sort({ createdAt: -1 });
+        const reviews = await Review.find(filter).sort({ createdAt: -1 }); //[cite: 7]
 
         res.status(200).json({
             success: true,
             count: reviews.length,
             data: reviews
-        });
+        }); //[cite: 7]
     } catch (error) {
-        console.error("Fetch reviews error:", error);
-        res.status(500).json({ success: false, message: "Error fetching reviews." });
+        console.error("Fetch reviews error:", error); //[cite: 7]
+        res.status(500).json({ success: false, message: "Error fetching reviews." }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
-// 4.3 Post-Stay Review Submission Route
+// 4.3 Post-Stay Review Submission Route[cite: 7]
 app.post('/api/reviews', async (req, res) => {
     try {
-        const { token, rating, comment, guestName } = req.body;
+        const { token, rating, comment, guestName } = req.body; //[cite: 7]
 
         if (!token) {
-            return res.status(400).json({ success: false, message: "Review token is missing." });
+            return res.status(400).json({ success: false, message: "Review token is missing." }); //[cite: 7]
         }
 
         if (!rating) {
-            return res.status(400).json({ success: false, message: "A rating is required to submit a review." });
+            return res.status(400).json({ success: false, message: "A rating is required to submit a review." }); //[cite: 7]
         }
 
-        const booking = await Booking.findOne({ reviewToken: token });
+        const booking = await Booking.findOne({ reviewToken: token }); //[cite: 7]
         if (!booking) {
-            return res.status(400).json({ success: false, message: "Invalid or expired review token." });
+            return res.status(400).json({ success: false, message: "Invalid or expired review token." }); //[cite: 7]
         }
 
         if (booking.reviewSubmitted) {
-            return res.status(400).json({ success: false, message: "A review has already been submitted for this booking." });
+            return res.status(400).json({ success: false, message: "A review has already been submitted for this booking." }); //[cite: 7]
         }
 
         const newReview = new Review({
@@ -731,37 +736,37 @@ app.post('/api/reviews', async (req, res) => {
             guestName: guestName || `${booking.firstName} ${booking.lastName}`.trim() || 'Verified Guest',
             rating: Number(rating),
             comment: comment || ''
-        });
+        }); //[cite: 7]
 
-        await newReview.save();
+        await newReview.save(); //[cite: 7]
 
-        booking.reviewSubmitted = true;
-        booking.reviewToken = undefined;
-        await booking.save();
+        booking.reviewSubmitted = true; //[cite: 7]
+        booking.reviewToken = undefined; //[cite: 7]
+        await booking.save(); //[cite: 7]
 
         res.status(200).json({ 
             success: true, 
             message: "Thank you! Your verified review has been submitted successfully.",
             data: newReview
-        });
+        }); //[cite: 7]
     } catch (error) {
-        console.error("Review submission error:", error);
-        res.status(500).json({ success: false, message: "Server error during review submission." });
+        console.error("Review submission error:", error); //[cite: 7]
+        res.status(500).json({ success: false, message: "Server error during review submission." }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
-// 4.5 Send Message Route
+// 4.5 Send Message Route[cite: 7]
 app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
     try {
-        const { recipientPhone, message, senderName, propertyTitle, guestName, recipient, sender } = req.body;
+        const { recipientPhone, message, senderName, propertyTitle, guestName, recipient, sender } = req.body; //[cite: 7]
 
         if (!message) {
-            return res.status(400).json({ success: false, error: "Missing required message field." });
+            return res.status(400).json({ success: false, error: "Missing required message field." }); //[cite: 7]
         }
 
-        const finalGuestName = guestName || recipient || 'Valued Guest';
-        const finalPropertyTitle = propertyTitle || 'StayGuwahati Property';
-        const finalSenderName = senderName || sender || 'User';
+        const finalGuestName = guestName || recipient || 'Valued Guest'; //[cite: 7]
+        const finalPropertyTitle = propertyTitle || 'StayGuwahati Property'; //[cite: 7]
+        const finalSenderName = senderName || sender || 'User'; //[cite: 7]
 
         const newMessage = new Message({
             propertyTitle: finalPropertyTitle,
@@ -769,38 +774,38 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
             senderName: finalSenderName,
             message,
             recipientPhone: recipientPhone || ''
-        });
-        await newMessage.save();
+        }); //[cite: 7]
+        await newMessage.save(); //[cite: 7]
 
-        let twilioSid = null;
+        let twilioSid = null; //[cite: 7]
         if (twilioClient && recipientPhone && (process.env.TWILIO_WHATSAPP_NUMBER || process.env.TWILIO_PHONE_NUMBER)) {
             try {
-                const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
-                const encodedGuest = encodeURIComponent(finalGuestName);
-                const encodedProp = encodeURIComponent(finalPropertyTitle);
+                const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in'; //[cite: 7]
+                const encodedGuest = encodeURIComponent(finalGuestName); //[cite: 7]
+                const encodedProp = encodeURIComponent(finalPropertyTitle); //[cite: 7]
                 
-                const chatLink = `${clientUrl}/chat?guest=${encodedGuest}&property=${encodedProp}`;
+                const chatLink = `${clientUrl}/chat?guest=${encodedGuest}&property=${encodedProp}`; //[cite: 7]
 
-                let formattedPhone = recipientPhone.trim().replace(/\s+/g, '');
+                let formattedPhone = recipientPhone.trim().replace(/\s+/g, ''); //[cite: 7]
                 if (!formattedPhone.startsWith('+')) {
-                    formattedPhone = `+91${formattedPhone.replace(/^0+/, '')}`;
+                    formattedPhone = `+91${formattedPhone.replace(/^0+/, '')}`; //[cite: 7]
                 }
 
-                const rawTwilioNumber = (process.env.TWILIO_WHATSAPP_NUMBER || process.env.TWILIO_PHONE_NUMBER || '').trim();
+                const rawTwilioNumber = (process.env.TWILIO_WHATSAPP_NUMBER || process.env.TWILIO_PHONE_NUMBER || '').trim(); //[cite: 7]
                 let fromWhatsAppNumber = rawTwilioNumber.startsWith('whatsapp:')
                     ? rawTwilioNumber
-                    : `whatsapp:${rawTwilioNumber}`;
+                    : `whatsapp:${rawTwilioNumber}`; //[cite: 7]
 
-                const whatsappBody = `*StayGuwahati Update*\n\nMessage from *${finalSenderName}* regarding *${finalPropertyTitle}*:\n"${message}"\n\nReply directly here:\n${chatLink}`;
+                const whatsappBody = `*StayGuwahati Update*\n\nMessage from *${finalSenderName}* regarding *${finalPropertyTitle}*:\n"${message}"\n\nReply directly here:\n${chatLink}`; //[cite: 7]
 
                 const twilioResponse = await twilioClient.messages.create({
                     body: whatsappBody,
                     from: fromWhatsAppNumber,
                     to: `whatsapp:${formattedPhone}`
-                });
-                twilioSid = twilioResponse.sid;
+                }); //[cite: 7]
+                twilioSid = twilioResponse.sid; //[cite: 7]
             } catch (twilioErr) {
-                console.error("Twilio Dispatch Warning:", twilioErr.message);
+                console.error("Twilio Dispatch Warning:", twilioErr.message); //[cite: 7]
             }
         }
 
@@ -809,39 +814,39 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
             message: "Message saved and dispatched successfully via WhatsApp.",
             data: newMessage,
             sid: twilioSid
-        });
+        }); //[cite: 7]
 
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        res.status(500).json({ success: false, error: error.message }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
-// 4.6 Get Messages Route
+// 4.6 Get Messages Route[cite: 7]
 app.get('/api/messages', async (req, res) => {
     try {
-        const { propertyTitle, guestName, recipientPhone } = req.query;
-        let filter = {};
+        const { propertyTitle, guestName, recipientPhone } = req.query; //[cite: 7]
+        let filter = {}; //[cite: 7]
 
-        if (propertyTitle) filter.propertyTitle = propertyTitle;
-        if (guestName) filter.guestName = guestName;
-        if (recipientPhone) filter.recipientPhone = recipientPhone;
+        if (propertyTitle) filter.propertyTitle = propertyTitle; //[cite: 7]
+        if (guestName) filter.guestName = guestName; //[cite: 7]
+        if (recipientPhone) filter.recipientPhone = recipientPhone; //[cite: 7]
 
-        const messages = await Message.find(filter).sort({ createdAt: 1 });
+        const messages = await Message.find(filter).sort({ createdAt: 1 }); //[cite: 7]
 
         res.status(200).json({
             success: true,
             data: messages
-        });
+        }); //[cite: 7]
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        res.status(500).json({ success: false, error: error.message }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
-// 4.7 Twilio Inbound Webhook
+// 4.7 Twilio Inbound Webhook[cite: 7]
 app.post('/api/messages/webhook', async (req, res) => {
     try {
-        const { From, Body, ProfileName } = req.body;
-        const senderPhone = From ? From.replace('whatsapp:', '') : '';
+        const { From, Body, ProfileName } = req.body; //[cite: 7]
+        const senderPhone = From ? From.replace('whatsapp:', '') : ''; //[cite: 7]
 
         if (Body) {
             const incomingMsg = new Message({
@@ -850,129 +855,139 @@ app.post('/api/messages/webhook', async (req, res) => {
                 senderName: ProfileName || senderPhone,
                 message: Body,
                 recipientPhone: senderPhone
-            });
-            await incomingMsg.save();
+            }); //[cite: 7]
+            await incomingMsg.save(); //[cite: 7]
         }
 
-        res.type('text/xml');
-        res.status(200).send('<Response></Response>');
+        res.type('text/xml'); //[cite: 7]
+        res.status(200).send('<Response></Response>'); //[cite: 7]
     } catch (error) {
-        res.status(500).send("Webhook processing error");
+        res.status(500).send("Webhook processing error"); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
-// 5. File Upload (Updated)
+// 5. File Upload (Supports up to 10 photos/images under flexible field keys)
 app.post('/api/upload-images', (req, res) => {
-    upload.array('photos', 3)(req, res, (err) => {
+    const multiUpload = upload.fields([
+        { name: 'photos', maxCount: 10 },
+        { name: 'images', maxCount: 10 }
+    ]);
+
+    multiUpload(req, res, (err) => {
         if (err instanceof multer.MulterError) {
-            return res.status(400).json({ success: false, message: `Upload error: ${err.message}` });
+            return res.status(400).json({ success: false, message: `Upload error: ${err.message}` }); //[cite: 7]
         } else if (err) {
-            return res.status(400).json({ success: false, message: err.message });
+            return res.status(400).json({ success: false, message: err.message }); //[cite: 7]
         }
 
-        if (!req.files || req.files.length === 0) {
-            return res.status(400).json({ success: false, message: 'No images uploaded.' });
+        const uploadedFiles = [];
+        if (req.files) {
+            if (req.files.photos) uploadedFiles.push(...req.files.photos);
+            if (req.files.images) uploadedFiles.push(...req.files.images);
+        }
+
+        if (uploadedFiles.length === 0) {
+            return res.status(400).json({ success: false, message: 'No image files uploaded.' });
         }
 
         const backendHost = (process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com')
             .replace(/\/$/, '')
-            .replace(/^http:\/\//i, 'https://');
+            .replace(/^http:\/\//i, 'https://'); //[cite: 7]
 
-        // Prepend host URL so frontend gets absolute web URLs
-        const filePaths = req.files.map(file => `${backendHost}/uploads/${file.filename}`);
-        res.status(200).json({ success: true, images: filePaths });
+        const filePaths = uploadedFiles.map(file => `${backendHost}/uploads/${file.filename}`);
+        res.status(200).json({ success: true, images: filePaths, urls: filePaths });
     });
 });
 
-// 6. Homestay Operations
+// 6. Homestay Operations[cite: 7]
 const getHomestaysHandler = async (req, res) => {
     try {
-        const { locality, maxPrice, feature, status } = req.query;
-        let queryFilter = {};
+        const { locality, maxPrice, feature, status } = req.query; //[cite: 7]
+        let queryFilter = {}; //[cite: 7]
 
         if (status) {
-            queryFilter.status = status.toLowerCase();
+            queryFilter.status = status.toLowerCase(); //[cite: 7]
         } else {
-            queryFilter.status = 'approved';
+            queryFilter.status = 'approved'; //[cite: 7]
         }
 
-        if (locality) queryFilter.locality = locality;
-        if (maxPrice) queryFilter.pricePerNight = { $lte: Number(maxPrice) };
-        if (feature) queryFilter.features = { $in: [feature] };
+        if (locality) queryFilter.locality = locality; //[cite: 7]
+        if (maxPrice) queryFilter.pricePerNight = { $lte: Number(maxPrice) }; //[cite: 7]
+        if (feature) queryFilter.features = { $in: [feature] }; //[cite: 7]
 
-        const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 });
-        res.status(200).json({ success: true, count: listings.length, data: listings });
+        const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 }); //[cite: 7]
+        res.status(200).json({ success: true, count: listings.length, data: listings }); //[cite: 7]
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Server Error' });
+        res.status(500).json({ success: false, message: 'Server Error' }); //[cite: 7]
     }
-};
+}; //[cite: 7]
 
 const getSingleHomestayHandler = async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-            return res.status(400).json({ success: false, message: "Invalid ID format" });
+            return res.status(400).json({ success: false, message: "Invalid ID format" }); //[cite: 7]
         }
 
-        const homestay = await Homestay.findById(req.params.id);
-        if (!homestay) return res.status(404).json({ success: false, message: "Property not found" });
+        const homestay = await Homestay.findById(req.params.id); //[cite: 7]
+        if (!homestay) return res.status(404).json({ success: false, message: "Property not found" }); //[cite: 7]
         
-        res.status(200).json({ success: true, data: homestay });
+        res.status(200).json({ success: true, data: homestay }); //[cite: 7]
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Server Error' });
+        res.status(500).json({ success: false, message: 'Server Error' }); //[cite: 7]
     }
-};
+}; //[cite: 7]
 
-app.get('/api/homestays', getHomestaysHandler);
-app.get('/api/properties', getHomestaysHandler);
+app.get('/api/homestays', getHomestaysHandler); //[cite: 7]
+app.get('/api/properties', getHomestaysHandler); //[cite: 7]
 
-app.get('/api/homestays/:id', getSingleHomestayHandler);
-app.get('/api/properties/:id', getSingleHomestayHandler);
+app.get('/api/homestays/:id', getSingleHomestayHandler); //[cite: 7]
+app.get('/api/properties/:id', getSingleHomestayHandler); //[cite: 7]
 
 app.get('/api/homestays/:id/image', async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-            return res.status(400).send("Invalid ID format");
+            return res.status(400).send("Invalid ID format"); //[cite: 7]
         }
 
-        const homestay = await Homestay.findById(req.params.id);
-        if (!homestay) return res.status(404).send("Property not found");
+        const homestay = await Homestay.findById(req.params.id); //[cite: 7]
+        if (!homestay) return res.status(404).send("Property not found"); //[cite: 7]
 
         let rawImage = (homestay.images && homestay.images[0]) ||
                          (homestay.photos && homestay.photos[0]) ||
-                         homestay.imageUrl || homestay.image;
+                         homestay.imageUrl || homestay.image; //[cite: 7]
 
         if (typeof rawImage === 'object' && rawImage !== null) {
-            rawImage = rawImage.url || rawImage.path || rawImage.secure_url || '';
+            rawImage = rawImage.url || rawImage.path || rawImage.secure_url || ''; //[cite: 7]
         }
 
         if (typeof rawImage === 'string' && rawImage.startsWith('data:image/')) {
-            const matches = rawImage.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
+            const matches = rawImage.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/); //[cite: 7]
             if (matches) {
-                const contentType = matches[1];
-                const imageBuffer = Buffer.from(matches[2], 'base64');
-                res.setHeader('Content-Type', contentType);
-                res.setHeader('Cache-Control', 'public, max-age=86400');
-                return res.send(imageBuffer);
+                const contentType = matches[1]; //[cite: 7]
+                const imageBuffer = Buffer.from(matches[2], 'base64'); //[cite: 7]
+                res.setHeader('Content-Type', contentType); //[cite: 7]
+                res.setHeader('Cache-Control', 'public, max-age=86400'); //[cite: 7]
+                return res.send(imageBuffer); //[cite: 7]
             }
         }
 
         if (typeof rawImage === 'string' && rawImage.trim().length > 0) {
-            let trimmed = rawImage.trim().replace(/\\/g, '/'); // Clean Windows backslashes
+            let trimmed = rawImage.trim().replace(/\\/g, '/'); //[cite: 7]
             
             if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-                return res.redirect(trimmed);
+                return res.redirect(trimmed); //[cite: 7]
             }
-            const backendHost = process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com';
-            const cleanHost = backendHost.replace(/\/$/, '').replace(/^http:\/\//i, 'https://');
-            const cleanPath = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-            return res.redirect(`${cleanHost}${cleanPath}`);
+            const backendHost = process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com'; //[cite: 7]
+            const cleanHost = backendHost.replace(/\/$/, '').replace(/^http:\/\//i, 'https://'); //[cite: 7]
+            const cleanPath = trimmed.startsWith('/') ? trimmed : `/${trimmed}`; //[cite: 7]
+            return res.redirect(`${cleanHost}${cleanPath}`); //[cite: 7]
         }
 
-        res.redirect('https://images.unsplash.com/photo-1580587771525-78b9dba3b914?auto=format&fit=crop&w=600&q=80');
+        res.redirect('https://images.unsplash.com/photo-1580587771525-78b9dba3b914?auto=format&fit=crop&w=600&q=80'); //[cite: 7]
     } catch (err) {
-        res.status(500).send("Error loading image");
+        res.status(500).send("Error loading image"); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
 app.post('/api/homestays', async (req, res) => {
     try {
@@ -984,84 +999,84 @@ app.post('/api/homestays', async (req, res) => {
                 email: req.body.email || (req.body.host && req.body.host.email) || ""
             },
             status: req.body.status ? req.body.status.toLowerCase() : 'pending'
-        };
+        }; //[cite: 7]
 
-        const newStay = await Homestay.create(formattedData);
-        res.status(201).json({ success: true, message: 'Listing created!', data: newStay });
+        const newStay = await Homestay.create(formattedData); //[cite: 7]
+        res.status(201).json({ success: true, message: 'Listing created!', data: newStay }); //[cite: 7]
     } catch (error) {
-        res.status(400).json({ success: false, message: 'Validation failed', error: error.message });
+        res.status(400).json({ success: false, message: 'Validation failed', error: error.message }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
 app.put('/api/homestays/:id', authenticateToken, async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-            return res.status(400).json({ success: false, message: "Invalid Property ID format" });
+            return res.status(400).json({ success: false, message: "Invalid Property ID format" }); //[cite: 7]
         }
 
         const updatedProperty = await Homestay.findByIdAndUpdate(
             req.params.id,
             { ...req.body },
             { new: true, runValidators: true }
-        );
+        ); //[cite: 7]
 
         if (!updatedProperty) {
-            return res.status(404).json({ success: false, message: "Property not found." });
+            return res.status(404).json({ success: false, message: "Property not found." }); //[cite: 7]
         }
 
-        res.status(200).json({ success: true, message: "Property updated successfully!", data: updatedProperty });
+        res.status(200).json({ success: true, message: "Property updated successfully!", data: updatedProperty }); //[cite: 7]
     } catch (error) {
-        res.status(500).json({ success: false, message: "Server error during update." });
+        res.status(500).json({ success: false, message: "Server error during update." }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
 app.delete('/api/homestays/:id', authenticateToken, async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-            return res.status(400).json({ success: false, message: "Invalid Property ID format" });
+            return res.status(400).json({ success: false, message: "Invalid Property ID format" }); //[cite: 7]
         }
 
-        const deletedProperty = await Homestay.findByIdAndDelete(req.params.id);
+        const deletedProperty = await Homestay.findByIdAndDelete(req.params.id); //[cite: 7]
         if (!deletedProperty) {
-            return res.status(404).json({ success: false, message: "Property not found." });
+            return res.status(404).json({ success: false, message: "Property not found." }); //[cite: 7]
         }
 
-        res.status(200).json({ success: true, message: "Property deleted successfully." });
+        res.status(200).json({ success: true, message: "Property deleted successfully." }); //[cite: 7]
     } catch (error) {
-        res.status(500).json({ success: false, message: "Server error during deletion." });
+        res.status(500).json({ success: false, message: "Server error during deletion." }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
 app.patch('/api/admin/homestays/:id/status', authenticateToken, authorizeAdmin, async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-            return res.status(400).json({ success: false, message: "Invalid Property ID format" });
+            return res.status(400).json({ success: false, message: "Invalid Property ID format" }); //[cite: 7]
         }
 
         if (!req.body.status) {
-            return res.status(400).json({ success: false, message: "Status is required in request body" });
+            return res.status(400).json({ success: false, message: "Status is required in request body" }); //[cite: 7]
         }
 
         const updatedProperty = await Homestay.findByIdAndUpdate(
             req.params.id,
             { status: req.body.status.toLowerCase() },
             { new: true, runValidators: true }
-        );
+        ); //[cite: 7]
         
-        if (!updatedProperty) return res.status(404).json({ success: false, message: "Property not found." });
-        res.json({ success: true, message: "Status updated!", data: updatedProperty });
+        if (!updatedProperty) return res.status(404).json({ success: false, message: "Property not found." }); //[cite: 7]
+        res.json({ success: true, message: "Status updated!", data: updatedProperty }); //[cite: 7]
     } catch (err) {
-        res.status(500).json({ success: false, message: "Server error." });
+        res.status(500).json({ success: false, message: "Server error." }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
-// Centralized Global Error Handler
+// Centralized Global Error Handler[cite: 7]
 app.use((err, req, res, next) => {
-    console.error("Unhandled Global Error:", err);
-    res.status(500).json({ success: false, message: err.message || "Internal Server Error" });
-});
+    console.error("Unhandled Global Error:", err); //[cite: 7]
+    res.status(500).json({ success: false, message: err.message || "Internal Server Error" }); //[cite: 7]
+}); //[cite: 7]
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5000; //[cite: 7]
 app.listen(PORT, () => {
-    console.log(`StayGuwahati Core Engine running on port ${PORT}`);
+    console.log(`StayGuwahati Core Engine running on port ${PORT}`); //[cite: 7]
 });
