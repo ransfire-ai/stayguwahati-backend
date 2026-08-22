@@ -925,18 +925,67 @@ const getHomestaysHandler = async (req, res) => {
 const getSingleHomestayHandler = async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-            return res.status(400).json({ success: false, message: "Invalid ID format" }); //[cite: 7]
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid ID format'
+            });
         }
 
-        const homestay = await Homestay.findById(req.params.id); //[cite: 7]
-        if (!homestay) return res.status(404).json({ success: false, message: "Property not found" }); //[cite: 7]
-        
-        res.status(200).json({ success: true, data: homestay }); //[cite: 7]
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Server Error' }); //[cite: 7]
-    }
-}; //[cite: 7]
+        // Use lean() so the exact MongoDB avatar URL is returned
+        // without Mongoose getters modifying it.
+        const homestay = await Homestay
+            .findById(req.params.id)
+            .lean();
 
+        if (!homestay) {
+            return res.status(404).json({
+                success: false,
+                message: 'Property not found'
+            });
+        }
+
+        // Only create fallback avatar if the real avatar is missing.
+        if (
+            homestay.host &&
+            (
+                !homestay.host.avatar ||
+                typeof homestay.host.avatar !== 'string' ||
+                homestay.host.avatar.trim() === ''
+            )
+        ) {
+            homestay.host.avatar =
+                `https://ui-avatars.com/api/?name=${encodeURIComponent(
+                    homestay.host.name || 'Host'
+                )}&background=0d9488&color=fff&size=128`;
+        }
+
+        console.log(
+            '[HOMESTAY API] Host:',
+            homestay.host?.name
+        );
+
+        console.log(
+            '[HOMESTAY API] Avatar:',
+            homestay.host?.avatar
+        );
+
+        return res.status(200).json({
+            success: true,
+            data: homestay
+        });
+
+    } catch (error) {
+        console.error(
+            'Error fetching single homestay:',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message: 'Server Error'
+        });
+    }
+};
 app.get('/api/homestays', getHomestaysHandler); //[cite: 7]
 app.get('/api/properties', getHomestaysHandler); //[cite: 7]
 
@@ -994,10 +1043,26 @@ app.post('/api/homestays', async (req, res) => {
         const formattedData = {
             ...req.body,
             host: {
-                name: req.body.owner || (req.body.host && req.body.host.name) || "Unknown Host",
-                phone: req.body.phone || (req.body.host && req.body.host.phone) || "",
-                email: req.body.email || (req.body.host && req.body.host.email) || ""
-            },
+    name:
+        req.body.owner ||
+        req.body.host?.name ||
+        'Unknown Host',
+
+    phone:
+        req.body.phone ||
+        req.body.host?.phone ||
+        '',
+
+    email:
+        req.body.email ||
+        req.body.host?.email ||
+        '',
+
+    avatar:
+        req.body.avatar ||
+        req.body.host?.avatar ||
+        ''
+}
             status: req.body.status ? req.body.status.toLowerCase() : 'pending'
         }; //[cite: 7]
 
