@@ -99,30 +99,29 @@ const homestaySchema = new mongoose.Schema({
     toObject: { virtuals: true, getters: true }
 });
 
-// Middleware to ensure avatar field is never stored as empty string prior to saving
-homestaySchema.pre('save', function(next) {
+// Synchronous pre-save middleware to ensure avatar field is never stored as empty string
+homestaySchema.pre('save', function() {
     if (this.host && (!this.host.avatar || this.host.avatar.trim() === '')) {
         this.host.avatar = generateDefaultAvatar(this.host.name);
     }
-    next();
 });
 
-// Virtual helper so p.price works on the frontend
+// Virtual helper so p.price works on the frontend[cite: 8]
 homestaySchema.virtual('price').get(function() {
     return this.pricePerNight;
 });
 
-// Virtual helper so p.image works on the frontend
+// Virtual helper so p.image works on the frontend[cite: 8]
 homestaySchema.virtual('image').get(function() {
     return this.images && this.images.length > 0 ? this.images[0] : null;
 });
 
-// Virtual helper so p.hostEmail works on the frontend
+// Virtual helper so p.hostEmail works on the frontend[cite: 8]
 homestaySchema.virtual('hostEmail').get(function() {
     return this.host ? this.host.email : null;
 });
 
-// Virtual helper so p.hostAvatar works on the frontend
+// Virtual helper so p.hostAvatar works on the frontend[cite: 8]
 homestaySchema.virtual('hostAvatar').get(function() {
     if (this.host && this.host.avatar && this.host.avatar.trim() !== '') {
         return this.host.avatar;
