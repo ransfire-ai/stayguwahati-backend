@@ -1,5 +1,11 @@
 const mongoose = require('mongoose');
 
+// Helper to generate a default initial avatar URL using host name
+function generateDefaultAvatar(name) {
+    const formattedName = encodeURIComponent(name || 'Host');
+    return `https://ui-avatars.com/api/?name=${formattedName}&background=0d9488&color=fff&size=128`;
+}
+
 const homestaySchema = new mongoose.Schema({
     title: { 
         type: String, 
@@ -64,7 +70,16 @@ const homestaySchema = new mongoose.Schema({
             index: true 
         },
         phone: { type: String, required: true },
-        avatar: { type: String, trim: true, default: '' },
+        avatar: { 
+            type: String, 
+            trim: true, 
+            default: function() {
+                return generateDefaultAvatar(this.name);
+            },
+            get: function(v) {
+                return (v && v.trim() !== '') ? v : generateDefaultAvatar(this.name);
+            }
+        },
         isVerified: { type: Boolean, default: false }
     },
     isAvailable: { 
@@ -80,8 +95,16 @@ const homestaySchema = new mongoose.Schema({
     }
 }, { 
     timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
+    toJSON: { virtuals: true, getters: true },
+    toObject: { virtuals: true, getters: true }
+});
+
+// Middleware to ensure avatar field is never stored as empty string prior to saving
+homestaySchema.pre('save', function(next) {
+    if (this.host && (!this.host.avatar || this.host.avatar.trim() === '')) {
+        this.host.avatar = generateDefaultAvatar(this.host.name);
+    }
+    next();
 });
 
 // Virtual helper so p.price works on the frontend
@@ -101,7 +124,10 @@ homestaySchema.virtual('hostEmail').get(function() {
 
 // Virtual helper so p.hostAvatar works on the frontend
 homestaySchema.virtual('hostAvatar').get(function() {
-    return this.host ? this.host.avatar : null;
+    if (this.host && this.host.avatar && this.host.avatar.trim() !== '') {
+        return this.host.avatar;
+    }
+    return generateDefaultAvatar(this.host ? this.host.name : 'Host');
 });
 
 module.exports = mongoose.model('Homestay', homestaySchema);
