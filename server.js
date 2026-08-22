@@ -1062,7 +1062,7 @@ app.post('/api/homestays', async (req, res) => {
         req.body.avatar ||
         req.body.host?.avatar ||
         ''
-}
+},
             status: req.body.status ? req.body.status.toLowerCase() : 'pending'
         }; //[cite: 7]
 
