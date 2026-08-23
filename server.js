@@ -66,7 +66,30 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 // Expose static files[cite: 7]
-app.use('/uploads', express.static(uploadDir)); //[cite: 7]
+app.use('/uploads', express.static(uploadDir, {
+    fallthrough: true,
+    maxAge: '7d',
+    etag: true,
+    index: false
+}));
+
+// Clear diagnostic response for a missing local upload.
+// This makes it obvious when an old MongoDB URL points to a file
+// that no longer exists on the Render filesystem.
+app.get('/uploads/:filename', (req, res, next) => {
+    const requestedFile = path.basename(req.params.filename || '');
+    const requestedPath = path.join(uploadDir, requestedFile);
+
+    if (fs.existsSync(requestedPath)) {
+        return next();
+    }
+
+    return res.status(404).type('text').send(
+        'Image file not found on this server. ' +
+        'If this is an old listing, re-upload the image. ' +
+        'For persistent storage, configure Cloudinary.'
+    );
+}); //[cite: 7]
 
 // --- MULTER STORAGE SETUP ---[cite: 7]
 const storage = multer.diskStorage({
@@ -95,6 +118,86 @@ const upload = multer({
         fieldSize: 50 * 1024 * 1024  // 50MB per text field
     }
 });
+
+// ============================================================
+// CLOUDINARY IMAGE STORAGE (OPTIONAL BUT RECOMMENDED)
+// ============================================================
+// Add these environment variables on Render to make uploaded
+// property images persistent across redeploys/restarts:
+//
+// CLOUDINARY_CLOUD_NAME
+// CLOUDINARY_API_KEY
+// CLOUDINARY_API_SECRET
+//
+// When configured, new uploads are sent to Cloudinary and the
+// returned secure URL is saved/returned to the frontend.
+// If Cloudinary is not configured, the server falls back to
+// the local /uploads folder for backward compatibility.
+
+const cloudinaryConfigured =
+    Boolean(process.env.CLOUDINARY_CLOUD_NAME) &&
+    Boolean(process.env.CLOUDINARY_API_KEY) &&
+    Boolean(process.env.CLOUDINARY_API_SECRET);
+
+async function uploadFileToCloudinary(filePath, originalName) {
+    if (!cloudinaryConfigured) {
+        return null;
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    const folder = 'stayguwahati/properties';
+
+    // Cloudinary signature is SHA-1 of the sorted upload parameters
+    // followed by the API secret.
+    const signatureBase = `folder=${folder}&timestamp=${timestamp}`;
+    const signature = crypto
+        .createHash('sha1')
+        .update(signatureBase + process.env.CLOUDINARY_API_SECRET)
+        .digest('hex');
+
+    const buffer = await fs.promises.readFile(filePath);
+    const form = new FormData();
+
+    form.append('file', new Blob([buffer]), originalName || path.basename(filePath));
+    form.append('api_key', process.env.CLOUDINARY_API_KEY);
+    form.append('timestamp', String(timestamp));
+    form.append('folder', folder);
+    form.append('signature', signature);
+
+    const endpoint =
+        `https://api.cloudinary.com/v1_1/${encodeURIComponent(
+            process.env.CLOUDINARY_CLOUD_NAME
+        )}/image/upload`;
+
+    const response = await fetch(endpoint, {
+        method: 'POST',
+        body: form
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.secure_url) {
+        throw new Error(
+            result?.error?.message ||
+            `Cloudinary upload failed with status ${response.status}`
+        );
+    }
+
+    return {
+        url: result.secure_url,
+        publicId: result.public_id
+    };
+}
+
+if (cloudinaryConfigured) {
+    console.log('☁️ Cloudinary image storage is ENABLED.');
+} else {
+    console.warn(
+        '⚠️ Cloudinary image storage is NOT configured. ' +
+        'New uploads will use the temporary Render /uploads filesystem.'
+    );
+}
+
 
 // Database Connection[cite: 7]
 if (!process.env.MONGODB_URI) {
@@ -197,6 +300,16 @@ const authorizeAdmin = (req, res, next) => {
     }
     return res.status(403).json({ success: false, message: 'Access denied. Admin rights required.' }); //[cite: 7]
 }; //[cite: 7]
+
+// Basic health/status endpoint
+app.get('/api/health', (req, res) => {
+    res.status(200).json({
+        success: true,
+        service: 'StayGuwahati backend',
+        storage: cloudinaryConfigured ? 'cloudinary' : 'local',
+        uploadsDirectory: uploadDir
+    });
+});
 
 // --- API ROUTES ---[cite: 7]
 
@@ -873,29 +986,109 @@ app.post('/api/upload-images', (req, res) => {
         { name: 'images', maxCount: 10 }
     ]);
 
-    multiUpload(req, res, (err) => {
+    multiUpload(req, res, async (err) => {
         if (err instanceof multer.MulterError) {
-            return res.status(400).json({ success: false, message: `Upload error: ${err.message}` }); //[cite: 7]
-        } else if (err) {
-            return res.status(400).json({ success: false, message: err.message }); //[cite: 7]
+            return res.status(400).json({
+                success: false,
+                message: `Upload error: ${err.message}`
+            });
         }
 
-        const uploadedFiles = [];
-        if (req.files) {
-            if (req.files.photos) uploadedFiles.push(...req.files.photos);
-            if (req.files.images) uploadedFiles.push(...req.files.images);
+        if (err) {
+            return res.status(400).json({
+                success: false,
+                message: err.message
+            });
         }
 
-        if (uploadedFiles.length === 0) {
-            return res.status(400).json({ success: false, message: 'No image files uploaded.' });
+        try {
+            const uploadedFiles = [];
+
+            if (req.files) {
+                if (req.files.photos) uploadedFiles.push(...req.files.photos);
+                if (req.files.images) uploadedFiles.push(...req.files.images);
+            }
+
+            if (uploadedFiles.length === 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'No image files uploaded.'
+                });
+            }
+
+            const backendHost = (
+                process.env.BACKEND_URL ||
+                'https://stayguwahati-backend.onrender.com'
+            )
+                .replace(/\/$/, '')
+                .replace(/^http:\/\//i, 'https://');
+
+            const results = [];
+
+            for (const file of uploadedFiles) {
+                // Preferred production path: persistent Cloudinary storage.
+                if (cloudinaryConfigured) {
+                    try {
+                        const cloudResult = await uploadFileToCloudinary(
+                            file.path,
+                            file.originalname
+                        );
+
+                        if (cloudResult?.url) {
+                            results.push({
+                                url: cloudResult.url,
+                                publicId: cloudResult.publicId
+                            });
+
+                            // Remove the temporary Render copy after Cloudinary
+                            // has confirmed the upload.
+                            try {
+                                await fs.promises.unlink(file.path);
+                            } catch (unlinkError) {
+                                console.warn(
+                                    'Could not remove temporary upload:',
+                                    unlinkError.message
+                                );
+                            }
+
+                            continue;
+                        }
+                    } catch (cloudError) {
+                        console.error(
+                            '❌ Cloudinary upload failed:',
+                            cloudError.message
+                        );
+
+                        // Do not silently lose the file. Keep the local copy
+                        // and return its URL as a fallback.
+                    }
+                }
+
+                // Backward-compatible fallback when Cloudinary is unavailable.
+                results.push({
+                    url: `${backendHost}/uploads/${encodeURIComponent(file.filename)}`,
+                    publicId: null
+                });
+            }
+
+            const filePaths = results.map(item => item.url);
+
+            return res.status(200).json({
+                success: true,
+                images: filePaths,
+                urls: filePaths,
+                files: results,
+                storage: cloudinaryConfigured ? 'cloudinary' : 'local'
+            });
+        } catch (uploadError) {
+            console.error('❌ Image upload route error:', uploadError);
+
+            return res.status(500).json({
+                success: false,
+                message: 'Image upload failed.',
+                error: uploadError.message
+            });
         }
-
-        const backendHost = (process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com')
-            .replace(/\/$/, '')
-            .replace(/^http:\/\//i, 'https://'); //[cite: 7]
-
-        const filePaths = uploadedFiles.map(file => `${backendHost}/uploads/${file.filename}`);
-        res.status(200).json({ success: true, images: filePaths, urls: filePaths });
     });
 });
 
