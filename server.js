@@ -171,25 +171,93 @@ function initScheduledJobs() {
     }); //[cite: 7]
 }
 
+// --- STRONG SESSION SECURITY ---
+// Server-side inactivity protection backs up the dashboard's client-side logout.
+// Each authenticated browser/device gets a separate session record.
+const SESSION_INACTIVITY_MS = 30 * 60 * 1000;
+const SESSION_CLEANUP_MS = 24 * 60 * 60 * 1000;
+
+const createSessionId = () => crypto.randomBytes(32).toString('hex');
+
+const cleanupExpiredSessions = async () => {
+    try {
+        const cutoff = new Date(Date.now() - SESSION_INACTIVITY_MS);
+        await User.collection.updateMany(
+            {},
+            { $pull: { authSessions: { lastActiveAt: { $lt: cutoff } } } }
+        );
+    } catch (error) {
+        console.error('[SESSION] Cleanup error:', error.message);
+    }
+};
+
+setInterval(cleanupExpiredSessions, SESSION_CLEANUP_MS).unref();
+
 // --- AUTHENTICATION MIDDLEWARE ---[cite: 7]
 const authenticateToken = (req, res, next) => {
-    const authHeader = req.headers['authorization']; //[cite: 7]
-    const token = authHeader && authHeader.split(' ')[1]; //[cite: 7]
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
 
     if (!token) {
-        return res.status(401).json({ success: false, message: 'Access denied. Token missing.' }); //[cite: 7]
+        return res.status(401).json({ success: false, message: 'Access denied. Token missing.' });
     }
 
-    const jwtSecret = process.env.JWT_SECRET || 'stayguwahati_jwt_super_secret_key_2026'; //[cite: 7]
+    const jwtSecret = process.env.JWT_SECRET || 'stayguwahati_jwt_super_secret_key_2026';
 
-    jwt.verify(token, jwtSecret, (err, user) => {
+    jwt.verify(token, jwtSecret, async (err, user) => {
         if (err) {
-            return res.status(403).json({ success: false, message: 'Invalid or expired token.' }); //[cite: 7]
+            return res.status(401).json({ success: false, message: 'Invalid or expired token.' });
         }
-        req.user = user; //[cite: 7]
-        next(); //[cite: 7]
+
+        try {
+            if (!user.userId || !user.sessionId) {
+                return res.status(401).json({ success: false, message: 'Session is no longer valid. Please log in again.' });
+            }
+
+            const dbUser = await User.collection.findOne(
+                { _id: new mongoose.Types.ObjectId(String(user.userId)), 'authSessions.sessionId': user.sessionId },
+                { projection: { authSessions: 1, name: 1, email: 1, role: 1 } }
+            );
+
+            if (!dbUser) {
+                return res.status(401).json({ success: false, message: 'Session is no longer valid. Please log in again.' });
+            }
+
+            const session = (dbUser.authSessions || []).find(
+                item => item && item.sessionId === user.sessionId
+            );
+
+            if (!session || !session.lastActiveAt) {
+                return res.status(401).json({ success: false, message: 'Session is no longer valid. Please log in again.' });
+            }
+
+            const lastActive = new Date(session.lastActiveAt).getTime();
+
+            if (!Number.isFinite(lastActive) || Date.now() - lastActive >= SESSION_INACTIVITY_MS) {
+                await User.collection.updateOne(
+                    { _id: dbUser._id },
+                    { $pull: { authSessions: { sessionId: user.sessionId } } }
+                );
+                return res.status(401).json({
+                    success: false,
+                    message: 'Session expired after 30 minutes of inactivity. Please log in again.'
+                });
+            }
+
+            // Sliding inactivity window: an authenticated request keeps this session alive.
+            await User.collection.updateOne(
+                { _id: dbUser._id, 'authSessions.sessionId': user.sessionId },
+                { $set: { 'authSessions.$.lastActiveAt': new Date() } }
+            );
+
+            req.user = user;
+            next();
+        } catch (dbError) {
+            console.error('[SESSION] Authentication check error:', dbError);
+            return res.status(500).json({ success: false, message: 'Unable to validate your session.' });
+        }
     });
-}; //[cite: 7]
+};
 
 const authorizeAdmin = (req, res, next) => {
     if (req.user && req.user.role === 'admin') {
@@ -242,9 +310,25 @@ app.post('/api/auth/login', async (req, res) => {
         if (!isMatch) return res.status(400).json({ success: false, message: "Invalid credentials." }); //[cite: 7]
 
         const jwtSecret = process.env.JWT_SECRET || 'stayguwahati_jwt_super_secret_key_2026'; //[cite: 7]
+        const sessionId = createSessionId();
+        const now = new Date();
+
+        // Use the native MongoDB collection so this works with existing User schemas.
+        await User.collection.updateOne(
+            { _id: user._id },
+            {
+                $push: {
+                    authSessions: {
+                        sessionId,
+                        createdAt: now,
+                        lastActiveAt: now
+                    }
+                }
+            }
+        );
 
         const token = jwt.sign(
-            { userId: user._id, email: user.email, role: user.role },
+            { userId: user._id, email: user.email, role: user.role, sessionId },
             jwtSecret,
             { expiresIn: '7d' }
         ); //[cite: 7]
@@ -264,6 +348,22 @@ app.post('/api/auth/login', async (req, res) => {
         res.status(500).json({ success: false, message: error.message || "Auth error." }); //[cite: 7]
     }
 }); //[cite: 7]
+
+// 2.1 Authentication: Logout
+// Invalidates only the current browser/device session on the server.
+app.post('/api/auth/logout', authenticateToken, async (req, res) => {
+    try {
+        await User.collection.updateOne(
+            { _id: new mongoose.Types.ObjectId(String(req.user.userId)) },
+            { $pull: { authSessions: { sessionId: req.user.sessionId } } }
+        );
+
+        return res.status(200).json({ success: true, message: 'Logged out successfully.' });
+    } catch (error) {
+        console.error('[AUTH] Logout error:', error);
+        return res.status(500).json({ success: false, message: 'Server error while logging out.' });
+    }
+});
 
 // 3. Authentication: Register[cite: 7]
 app.post('/api/auth/register', async (req, res) => {
