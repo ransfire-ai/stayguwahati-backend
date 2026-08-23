@@ -1277,17 +1277,16 @@ app.put('/api/homestays/:id', authenticateToken, async (req, res) => {
             });
         }
 
-        const existingProperty = await Homestay.findById(id);
+        const property = await Homestay.findById(id);
 
-        if (!existingProperty) {
+        if (!property) {
             return res.status(404).json({
                 success: false,
                 message: 'Property not found.'
             });
         }
 
-        // Only update fields that are actually supplied.
-        const allowedFields = [
+        const editableFields = [
             'title',
             'locality',
             'description',
@@ -1299,46 +1298,38 @@ app.put('/api/homestays/:id', authenticateToken, async (req, res) => {
             'isAvailable'
         ];
 
-        allowedFields.forEach((field) => {
+        editableFields.forEach((field) => {
             if (req.body[field] !== undefined) {
-                existingProperty[field] = req.body[field];
+                property[field] = req.body[field];
             }
         });
 
-        // IMPORTANT:
-        // Merge host fields instead of replacing the complete host object.
-        // This preserves required host.name and host.email.
+        // Merge host fields instead of replacing the required host object.
         if (req.body.host && typeof req.body.host === 'object') {
             if (req.body.host.name !== undefined) {
-                existingProperty.host.name = req.body.host.name;
+                property.host.name = req.body.host.name;
             }
-
             if (req.body.host.email !== undefined) {
-                existingProperty.host.email = req.body.host.email;
+                property.host.email = req.body.host.email;
             }
-
             if (req.body.host.phone !== undefined) {
-                existingProperty.host.phone = req.body.host.phone;
+                property.host.phone = req.body.host.phone;
             }
-
             if (req.body.host.avatar !== undefined) {
-                existingProperty.host.avatar = req.body.host.avatar;
+                property.host.avatar = req.body.host.avatar;
             }
-
             if (req.body.host.isVerified !== undefined) {
-                existingProperty.host.isVerified =
-                    req.body.host.isVerified;
+                property.host.isVerified = req.body.host.isVerified;
             }
         }
 
-        await existingProperty.save();
+        await property.save();
 
         return res.status(200).json({
             success: true,
             message: 'Property updated successfully!',
-            data: existingProperty
+            data: property
         });
-
     } catch (error) {
         console.error('❌ Property update error:', error);
 
@@ -1354,7 +1345,7 @@ app.put('/api/homestays/:id', authenticateToken, async (req, res) => {
                 : undefined
         });
     }
-}); //[cite: 7]
+});
 
 app.delete('/api/homestays/:id', authenticateToken, async (req, res) => {
     try {
