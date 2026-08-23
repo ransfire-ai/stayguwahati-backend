@@ -699,37 +699,317 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
 });
 
 // 4.2 Get Reviews Route[cite: 7]
+
+// ============================================================
+// VERIFIED REVIEWS
+// A review is allowed only when:
+//   1) the authenticated user owns the booking,
+//   2) the booking belongs to the requested property,
+//   3) the booking is genuinely completed,
+//   4) the booking has not already been reviewed.
+// The review token is an additional secure hand-off for the email flow.
+// ============================================================
+
+function normalizeBookingStatus(status) {
+    return String(status || '').trim().toLowerCase();
+}
+
+function bookingUserMatches(booking, user) {
+    if (!booking || !user) return false;
+
+    const bookingUserId =
+        booking.userId ||
+        booking.user ||
+        booking.guestUserId ||
+        booking.user?._id;
+
+    if (bookingUserId && user.userId) {
+        if (String(bookingUserId) === String(user.userId)) return true;
+    }
+
+    const bookingEmail = String(
+        booking.email ||
+        booking.guestInfo?.email ||
+        ''
+    ).trim().toLowerCase();
+
+    const userEmail = String(user.email || '').trim().toLowerCase();
+
+    return Boolean(bookingEmail && userEmail && bookingEmail === userEmail);
+}
+
+function bookingPropertyMatches(booking, propertyId) {
+    if (!booking || !propertyId) return false;
+
+    const ids = [
+        booking.homestayId,
+        booking.propertyId,
+        booking.homestay?._id,
+        booking.homestay?.id
+    ].filter(Boolean).map(String);
+
+    return ids.includes(String(propertyId));
+}
+
+function isBookingCompleted(booking) {
+    const status = normalizeBookingStatus(booking?.status);
+
+    // Prefer an explicit completed status.
+    if (['completed', 'complete', 'checkedout', 'checked-out'].includes(status)) {
+        return true;
+    }
+
+    // Also allow a confirmed booking whose checkout date has passed.
+    // This matches the dashboard's completed-stay lifecycle without
+    // silently changing the database booking status here.
+    if (['confirmed', 'accepted', 'approved'].includes(status) && booking?.checkOutDate) {
+        const checkout = new Date(booking.checkOutDate);
+        if (!Number.isNaN(checkout.getTime()) && checkout.getTime() < Date.now()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+async function findReviewForBooking(booking) {
+    if (!booking) return null;
+
+    const queries = [{ booking: booking._id }];
+
+    // Backward compatibility for Review schemas that use bookingId.
+    queries.push({ bookingId: booking._id });
+
+    return Review.findOne({ $or: queries });
+}
+
+// Public property review list. Submission remains protected below.
 app.get('/api/reviews', async (req, res) => {
     try {
-        const { propertyId } = req.query; //[cite: 7]
-        let filter = {}; //[cite: 7]
+        const propertyId = String(req.query.propertyId || '').trim();
 
-        if (propertyId) {
-            const cleanPropertyId = propertyId.toString().trim(); //[cite: 7]
-            
-            if (mongoose.Types.ObjectId.isValid(cleanPropertyId)) {
-                filter.propertyId = {
-                    $in: [cleanPropertyId, new mongoose.Types.ObjectId(cleanPropertyId)]
-                }; //[cite: 7]
-            } else {
-                filter.propertyId = cleanPropertyId; //[cite: 7]
-            }
+        if (!propertyId) {
+            return res.status(400).json({
+                success: false,
+                message: 'propertyId is required.'
+            });
         }
 
-        const reviews = await Review.find(filter).sort({ createdAt: -1 }); //[cite: 7]
+        const query = {
+            $or: [
+                { propertyId },
+                ...(mongoose.Types.ObjectId.isValid(propertyId)
+                    ? [{ property: propertyId }, { homestayId: propertyId }]
+                    : [])
+            ]
+        };
 
-        res.status(200).json({
+        const reviews = await Review.find(query)
+            .sort({ createdAt: -1 })
+            .lean();
+
+        return res.json({
             success: true,
-            count: reviews.length,
             data: reviews
-        }); //[cite: 7]
+        });
     } catch (error) {
-        console.error("Fetch reviews error:", error); //[cite: 7]
-        res.status(500).json({ success: false, message: "Error fetching reviews." }); //[cite: 7]
+        console.error('[REVIEWS] Fetch error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Unable to load reviews.'
+        });
     }
-}); //[cite: 7]
+});
 
-// 4.3 Post-Stay Review Submission Route[cite: 7]
+// Verify the secure review token and enforce the completed-booking rule.
+app.get('/api/reviews/verify', async (req, res) => {
+    try {
+        const token = String(req.query.token || '').trim();
+
+        if (!token) {
+            return res.status(400).json({
+                success: false,
+                message: 'Review token is required.'
+            });
+        }
+
+        const booking = await Booking.findOne({ reviewToken: token }).lean();
+
+        if (!booking) {
+            return res.status(404).json({
+                success: false,
+                message: 'This review link is invalid or no longer available.'
+            });
+        }
+
+        if (!isBookingCompleted(booking)) {
+            return res.status(403).json({
+                success: false,
+                message: 'You can review a property only after completing your stay.'
+            });
+        }
+
+        const existingReview = await findReviewForBooking(booking);
+
+        if (existingReview) {
+            return res.status(409).json({
+                success: false,
+                message: 'You have already reviewed this stay.',
+                data: {
+                    propertyName: booking.propertyName,
+                    propertyId: booking.homestayId || booking.propertyId,
+                    reviewSubmitted: true
+                }
+            });
+        }
+
+        return res.json({
+            success: true,
+            data: {
+                propertyName: booking.propertyName,
+                propertyId: booking.homestayId || booking.propertyId,
+                guestName: booking.firstName
+                    ? `${booking.firstName}${booking.lastName ? ` ${booking.lastName}` : ''}`
+                    : '',
+                checkInDate: booking.checkInDate || booking.checkIn,
+                checkOutDate: booking.checkOutDate || booking.checkOut,
+                reviewSubmitted: false
+            }
+        });
+    } catch (error) {
+        console.error('[REVIEWS] Verify error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Unable to verify this review link.'
+        });
+    }
+});
+
+// Authenticated review submission.
+// The browser cannot choose another user/property/booking because the
+// backend derives the review identity from the verified booking token.
+app.post('/api/reviews', authenticateToken, async (req, res) => {
+    try {
+        const token = String(req.body.token || '').trim();
+        const rating = Number(req.body.rating);
+        const comment = String(req.body.comment || '').trim();
+
+        if (!token) {
+            return res.status(400).json({
+                success: false,
+                message: 'Secure review token is required.'
+            });
+        }
+
+        if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+            return res.status(400).json({
+                success: false,
+                message: 'Rating must be a whole number from 1 to 5.'
+            });
+        }
+
+        if (comment.length > 1000) {
+            return res.status(400).json({
+                success: false,
+                message: 'Review comment cannot exceed 1000 characters.'
+            });
+        }
+
+        const booking = await Booking.findOne({ reviewToken: token });
+
+        if (!booking) {
+            return res.status(404).json({
+                success: false,
+                message: 'This review link is invalid or no longer available.'
+            });
+        }
+
+        // booking.user === loggedInUser
+        if (!bookingUserMatches(booking, req.user)) {
+            return res.status(403).json({
+                success: false,
+                message: 'You can review only your own completed booking.'
+            });
+        }
+
+        // booking.property === requested property
+        const propertyId =
+            booking.homestayId ||
+            booking.propertyId ||
+            booking.homestay;
+
+        if (!bookingPropertyMatches(booking, propertyId)) {
+            return res.status(403).json({
+                success: false,
+                message: 'This booking is not linked to a valid property.'
+            });
+        }
+
+        // booking.status === COMPLETED
+        if (!isBookingCompleted(booking)) {
+            return res.status(403).json({
+                success: false,
+                message: 'You can review a property only after completing your stay.'
+            });
+        }
+
+        // review already exists?
+        const existingReview = await findReviewForBooking(booking);
+
+        if (existingReview) {
+            return res.status(409).json({
+                success: false,
+                message: 'You have already reviewed this stay.'
+            });
+        }
+
+        const reviewPayload = {
+            booking: booking._id,
+            bookingId: booking._id,
+            propertyId: propertyId,
+            homestayId: propertyId,
+            user: req.user.userId,
+            userId: req.user.userId,
+            guestName: booking.firstName
+                ? `${booking.firstName}${booking.lastName ? ` ${booking.lastName}` : ''}`
+                : (req.user.email || 'Guest'),
+            guestEmail: String(booking.email || req.user.email || '').toLowerCase(),
+            rating,
+            comment,
+            verifiedStay: true,
+            createdAt: new Date()
+        };
+
+        const review = await Review.create(reviewPayload);
+
+        // Make the token single-use after successful submission.
+        booking.reviewSubmitted = true;
+        booking.reviewSubmittedAt = new Date();
+        await booking.save();
+
+        return res.status(201).json({
+            success: true,
+            message: 'Verified review submitted successfully.',
+            data: review
+        });
+    } catch (error) {
+        // A unique index/constraint on booking should also protect against
+        // concurrent duplicate submissions.
+        if (error?.code === 11000) {
+            return res.status(409).json({
+                success: false,
+                message: 'You have already reviewed this stay.'
+            });
+        }
+
+        console.error('[REVIEWS] Submission error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Unable to submit your review.'
+        });
+    }
+});
+
 app.post('/api/reviews', async (req, res) => {
     try {
         const { token, rating, comment, guestName } = req.body; //[cite: 7]

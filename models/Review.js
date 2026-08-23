@@ -27,4 +27,15 @@ const reviewSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
+// One verified review per booking.
+// Partial index keeps older reviews without bookingId valid while preventing
+// duplicate reviews for the same genuine booking.
+reviewSchema.index(
+    { bookingId: 1 },
+    {
+        unique: true,
+        partialFilterExpression: { bookingId: { $exists: true, $ne: null } }
+    }
+);
+
 module.exports = mongoose.model('Review', reviewSchema);
