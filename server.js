@@ -66,30 +66,7 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 // Expose static files[cite: 7]
-app.use('/uploads', express.static(uploadDir, {
-    fallthrough: true,
-    maxAge: '7d',
-    etag: true,
-    index: false
-}));
-
-// Clear diagnostic response for a missing local upload.
-// This makes it obvious when an old MongoDB URL points to a file
-// that no longer exists on the Render filesystem.
-app.get('/uploads/:filename', (req, res, next) => {
-    const requestedFile = path.basename(req.params.filename || '');
-    const requestedPath = path.join(uploadDir, requestedFile);
-
-    if (fs.existsSync(requestedPath)) {
-        return next();
-    }
-
-    return res.status(404).type('text').send(
-        'Image file not found on this server. ' +
-        'If this is an old listing, re-upload the image. ' +
-        'For persistent storage, configure Cloudinary.'
-    );
-}); //[cite: 7]
+app.use('/uploads', express.static(uploadDir)); //[cite: 7]
 
 // --- MULTER STORAGE SETUP ---[cite: 7]
 const storage = multer.diskStorage({
@@ -118,86 +95,6 @@ const upload = multer({
         fieldSize: 50 * 1024 * 1024  // 50MB per text field
     }
 });
-
-// ============================================================
-// CLOUDINARY IMAGE STORAGE (OPTIONAL BUT RECOMMENDED)
-// ============================================================
-// Add these environment variables on Render to make uploaded
-// property images persistent across redeploys/restarts:
-//
-// CLOUDINARY_CLOUD_NAME
-// CLOUDINARY_API_KEY
-// CLOUDINARY_API_SECRET
-//
-// When configured, new uploads are sent to Cloudinary and the
-// returned secure URL is saved/returned to the frontend.
-// If Cloudinary is not configured, the server falls back to
-// the local /uploads folder for backward compatibility.
-
-const cloudinaryConfigured =
-    Boolean(process.env.CLOUDINARY_CLOUD_NAME) &&
-    Boolean(process.env.CLOUDINARY_API_KEY) &&
-    Boolean(process.env.CLOUDINARY_API_SECRET);
-
-async function uploadFileToCloudinary(filePath, originalName) {
-    if (!cloudinaryConfigured) {
-        return null;
-    }
-
-    const timestamp = Math.floor(Date.now() / 1000);
-    const folder = 'stayguwahati/properties';
-
-    // Cloudinary signature is SHA-1 of the sorted upload parameters
-    // followed by the API secret.
-    const signatureBase = `folder=${folder}&timestamp=${timestamp}`;
-    const signature = crypto
-        .createHash('sha1')
-        .update(signatureBase + process.env.CLOUDINARY_API_SECRET)
-        .digest('hex');
-
-    const buffer = await fs.promises.readFile(filePath);
-    const form = new FormData();
-
-    form.append('file', new Blob([buffer]), originalName || path.basename(filePath));
-    form.append('api_key', process.env.CLOUDINARY_API_KEY);
-    form.append('timestamp', String(timestamp));
-    form.append('folder', folder);
-    form.append('signature', signature);
-
-    const endpoint =
-        `https://api.cloudinary.com/v1_1/${encodeURIComponent(
-            process.env.CLOUDINARY_CLOUD_NAME
-        )}/image/upload`;
-
-    const response = await fetch(endpoint, {
-        method: 'POST',
-        body: form
-    });
-
-    const result = await response.json();
-
-    if (!response.ok || !result.secure_url) {
-        throw new Error(
-            result?.error?.message ||
-            `Cloudinary upload failed with status ${response.status}`
-        );
-    }
-
-    return {
-        url: result.secure_url,
-        publicId: result.public_id
-    };
-}
-
-if (cloudinaryConfigured) {
-    console.log('☁️ Cloudinary image storage is ENABLED.');
-} else {
-    console.warn(
-        '⚠️ Cloudinary image storage is NOT configured. ' +
-        'New uploads will use the temporary Render /uploads filesystem.'
-    );
-}
-
 
 // Database Connection[cite: 7]
 if (!process.env.MONGODB_URI) {
@@ -300,16 +197,6 @@ const authorizeAdmin = (req, res, next) => {
     }
     return res.status(403).json({ success: false, message: 'Access denied. Admin rights required.' }); //[cite: 7]
 }; //[cite: 7]
-
-// Basic health/status endpoint
-app.get('/api/health', (req, res) => {
-    res.status(200).json({
-        success: true,
-        service: 'StayGuwahati backend',
-        storage: cloudinaryConfigured ? 'cloudinary' : 'local',
-        uploadsDirectory: uploadDir
-    });
-});
 
 // --- API ROUTES ---[cite: 7]
 
@@ -492,211 +379,303 @@ app.get('/api/bookings', async (req, res) => {
     }
 }); //[cite: 7]
 
-app.get('/api/bookings/:id', async (req, res) => {
-    try {
-        if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ success: false, message: 'Invalid Booking ID.' });
-        const booking = await Booking.findById(req.params.id).populate('homestayId');
-        if (!booking) return res.status(404).json({ success: false, message: 'Booking not found.' });
-        return res.json({ success: true, data: booking });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: 'Error loading booking.' });
-    }
-});
-
 app.post('/api/bookings', async (req, res) => {
     try {
-        const {
+        let {
             firstName,
             lastName,
-            fullName,
             email,
             phone,
             guestInfo,
+            propertyName,
+            dates,
             homestayId,
             propertyId,
             checkIn,
             checkOut,
-            guests,
-            specialRequests,
-            userId
-        } = req.body;
+            nights,
+            totalPrice,
+            totalAmount
+        } = req.body; //[cite: 7]
 
-        const guestEmail = String(email || guestInfo?.email || '').trim().toLowerCase();
-        const guestPhone = String(phone || guestInfo?.phone || '').trim();
-        const suppliedName = String(fullName || guestInfo?.fullName || '').trim();
-        const parts = suppliedName ? suppliedName.split(/\s+/) : [];
-        const finalFirstName = String(firstName || parts[0] || '').trim();
-        const finalLastName = String(lastName || parts.slice(1).join(' ') || '').trim();
-
-        if (!finalFirstName) return res.status(400).json({ success: false, message: 'Full name is required.' });
-        if (!guestEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guestEmail)) {
-            return res.status(400).json({ success: false, message: 'A valid email address is required.' });
-        }
-        if (!guestPhone) return res.status(400).json({ success: false, message: 'Phone number is required.' });
-
-        const targetId = homestayId || propertyId || req.body.id;
-        if (!targetId || !mongoose.Types.ObjectId.isValid(targetId)) {
-            return res.status(400).json({ success: false, message: 'A valid property is required.' });
+        // --- 1. Robust Guest Info Parsing ---[cite: 7]
+        if (guestInfo) {
+            if (!email && guestInfo.email) email = guestInfo.email; //[cite: 7]
+            if (!phone && guestInfo.phone) phone = guestInfo.phone; //[cite: 7]
+            if (!firstName && !lastName && guestInfo.fullName) {
+                const parts = guestInfo.fullName.trim().split(' '); //[cite: 7]
+                firstName = parts[0] || 'Valued'; //[cite: 7]
+                lastName = parts.slice(1).join(' ') || 'Guest'; //[cite: 7]
+            }
         }
 
-        const property = await Homestay.findById(targetId);
-        if (!property) return res.status(404).json({ success: false, message: 'Property not found.' });
-        if (property.status && property.status !== 'approved') {
-            return res.status(400).json({ success: false, message: 'This property is not currently available for booking.' });
-        }
-        if (property.isAvailable === false) {
-            return res.status(400).json({ success: false, message: 'This property is currently unavailable.' });
+        if ((!firstName || !lastName) && req.body.fullName) {
+            const parts = req.body.fullName.trim().split(' '); //[cite: 7]
+            firstName = firstName || parts[0] || 'Valued'; //[cite: 7]
+            lastName = lastName || parts.slice(1).join(' ') || 'Guest'; //[cite: 7]
         }
 
-        const parsedCheckIn = new Date(checkIn);
-        const parsedCheckOut = new Date(checkOut);
-        if (isNaN(parsedCheckIn.getTime()) || isNaN(parsedCheckOut.getTime()) || parsedCheckOut <= parsedCheckIn) {
-            return res.status(400).json({ success: false, message: 'Please select valid check-in and check-out dates.' });
+        firstName = firstName || 'Valued'; //[cite: 7]
+        lastName = lastName || 'Guest'; //[cite: 7]
+        email = email || 'guest@stayguwahati.in'; //[cite: 7]
+        phone = phone || '9876543210'; //[cite: 7]
+
+        // --- 2. Flexible Property & ID Resolution ---[cite: 7]
+        let targetHomestayId = homestayId || propertyId || req.body.id; //[cite: 7]
+        let property = null; //[cite: 7]
+
+        if (targetHomestayId && mongoose.Types.ObjectId.isValid(targetHomestayId)) {
+            property = await Homestay.findById(targetHomestayId); //[cite: 7]
         }
 
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        if (parsedCheckIn < today) {
-            return res.status(400).json({ success: false, message: 'Check-in date cannot be in the past.' });
+        if (!property) {
+            property = await Homestay.findOne({}); //[cite: 7]
         }
 
-        const nights = Math.ceil((parsedCheckOut - parsedCheckIn) / (1000 * 60 * 60 * 24));
-        const guestCount = Math.max(1, Number(guests) || 1);
-        const nightlyRate = Number(property.pricePerNight || 0);
-        const serverTotal = nightlyRate * nights;
-
-        // Do not allow overlapping requested/confirmed bookings.
-        const conflict = await Booking.findOne({
-            homestayId: property._id,
-            status: { $in: ['Requested', 'Confirmed'] },
-            checkInDate: { $lt: parsedCheckOut },
-            checkOutDate: { $gt: parsedCheckIn }
-        });
-        if (conflict) {
-            return res.status(409).json({ success: false, message: 'These dates are already requested or booked. Please choose different dates.' });
+        if (!property) {
+            property = await Homestay.create({
+                title: propertyName || 'Green Villa',
+                locality: 'Guwahati',
+                pricePerNight: 1500,
+                status: 'approved',
+                ownerEmail: email
+            }); //[cite: 7]
         }
 
-        const hostEmail = String(property.ownerEmail || property.host?.email || '').trim().toLowerCase();
-        const reviewToken = crypto.randomBytes(32).toString('hex');
-        const booking = new Booking({
-            firstName: finalFirstName,
-            lastName: finalLastName || 'Guest',
-            email: guestEmail,
-            phone: guestPhone,
-            userId: userId || null,
-            propertyId: property._id,
-            homestayId: property._id,
-            propertyName: property.title,
-            dates: `${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]}`,
+        const validHomestayId = property._id; //[cite: 7]
+        const targetEmail = property.ownerEmail || (property.host && property.host.email) || email; //[cite: 7]
+        const propertyAddress = property.address || property.locality || 'Guwahati, Assam'; //[cite: 7]
+        let googleMapsUrl = property.mapUrl || property.googleMapsLink || ''; //[cite: 7]
+
+        // --- 3. Date & Pricing Normalization ---[cite: 7]
+        let parsedCheckIn = checkIn ? new Date(checkIn) : new Date(); //[cite: 7]
+        let parsedCheckOut = checkOut ? new Date(checkOut) : new Date(Date.now() + 86400000); //[cite: 7]
+
+        if ((!checkIn || isNaN(parsedCheckIn.getTime())) && dates && dates.includes('to')) {
+            const parts = dates.split('to').map(s => s.trim()); //[cite: 7]
+            const d1 = new Date(parts[0]); //[cite: 7]
+            const d2 = new Date(parts[1]); //[cite: 7]
+            if (!isNaN(d1.getTime())) parsedCheckIn = d1; //[cite: 7]
+            if (!isNaN(d2.getTime())) parsedCheckOut = d2; //[cite: 7]
+        }
+
+        if (isNaN(parsedCheckIn.getTime())) parsedCheckIn = new Date(); //[cite: 7]
+        if (isNaN(parsedCheckOut.getTime()) || parsedCheckOut <= parsedCheckIn) {
+            parsedCheckOut = new Date(parsedCheckIn.getTime() + 86400000); //[cite: 7]
+        }
+
+        const formattedDates = dates || `${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]}`; //[cite: 7]
+        const formattedPropertyName = propertyName || property.title || property.propertyName || 'Green Villa'; //[cite: 7]
+        const finalTotalPrice = totalPrice !== undefined ? totalPrice : (totalAmount !== undefined ? totalAmount : (property.pricePerNight || 1500)); //[cite: 7]
+
+        if (!googleMapsUrl) {
+            const searchQuery = encodeURIComponent(`${formattedPropertyName} ${propertyAddress}`); //[cite: 7]
+            googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${searchQuery}`; //[cite: 7]
+        }
+
+        const reviewToken = crypto.randomBytes(32).toString('hex'); //[cite: 7]
+
+        // --- 4. Save Booking ---[cite: 7]
+        const newBooking = new Booking({
+            firstName,
+            lastName,
+            email: email.toLowerCase(),
+            phone,
+            userId: req.body.userId || null,
+            propertyId: validHomestayId,
+            homestayId: validHomestayId,
+            propertyName: formattedPropertyName,
+            dates: formattedDates,
             checkInDate: parsedCheckIn,
             checkOutDate: parsedCheckOut,
-            hostEmail,
-            nights,
-            guests: guestCount,
-            totalPrice: serverTotal,
-            nightlyRate,
-            specialRequests: String(specialRequests || '').trim(),
-            status: 'Requested',
+            hostEmail: targetEmail,
+            nights: nights || 1,
+            totalPrice: finalTotalPrice,
+            status: req.body.status || 'Confirmed',
             reviewToken,
             reviewSubmitted: false,
             reviewEmailSent: false
-        });
+        }); //[cite: 7]
+        
+        await newBooking.save(); //[cite: 7]
 
-        await booking.save();
-
-        // Send a request email, not a confirmation email. The booking is only confirmed after host approval.
+        // --- 5. Async Email Dispatch (Non-blocking) ---[cite: 7]
         if (resend) {
-            const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
-            const bookingUrl = `${clientUrl}/dashboard`;
-            const emailTasks = [];
+            const emailPromises = []; //[cite: 7]
 
-            emailTasks.push(resend.emails.send({
-                from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
-                to: guestEmail,
-                subject: `Booking request received: ${property.title}`,
-                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a"><h2>StayGuwahati</h2><p>Hi ${finalFirstName},</p><p>Your booking request has been sent to the host. It is <strong>not confirmed yet</strong>.</p><p><strong>${property.title}</strong><br>${property.locality}, Guwahati<br>${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]} · ${guestCount} guest(s)<br>₹${serverTotal.toLocaleString('en-IN')}</p><p>The host will review your request and you will be notified when it is accepted or declined.</p><a href="${bookingUrl}">View My Bookings</a></div>`
-            }).catch(e => console.error('Guest request email error:', e.message)));
+            if (email) {
+                const backendHost = process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com'; //[cite: 7]
+                const cleanHost = backendHost.replace(/\/$/, '').replace(/^http:\/\//i, 'https://'); //[cite: 7]
 
-            if (hostEmail) {
-                emailTasks.push(resend.emails.send({
-                    from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
-                    to: hostEmail,
-                    subject: `New booking request: ${property.title}`,
-                    html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a"><h2>New Booking Request</h2><p><strong>${finalFirstName} ${finalLastName}</strong> requested a stay at <strong>${property.title}</strong>.</p><p>Dates: ${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]}<br>Guests: ${guestCount}<br>Total: ₹${serverTotal.toLocaleString('en-IN')}<br>Guest phone: ${guestPhone}<br>Guest email: ${guestEmail}</p><p>Open your StayGuwahati host dashboard to accept or reject the request.</p></div>`
-                }).catch(e => console.error('Host request email error:', e.message)));
+                let propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`; //[cite: 7]
+
+                let rawImage = null; //[cite: 7]
+                if (Array.isArray(property.images) && property.images.length > 0) {
+                    rawImage = property.images[0]; //[cite: 7]
+                } else if (Array.isArray(property.photos) && property.photos.length > 0) {
+                    rawImage = property.photos[0]; //[cite: 7]
+                } else {
+                    rawImage = property.imageUrl || property.image || property.coverImage; //[cite: 7]
+                }
+
+                if (typeof rawImage === 'object' && rawImage !== null) {
+                    rawImage = rawImage.url || rawImage.path || rawImage.secure_url || ''; //[cite: 7]
+                }
+
+                if (typeof rawImage === 'string' && rawImage.trim() !== '') {
+                    const trimmedImg = rawImage.trim(); //[cite: 7]
+
+                    if (trimmedImg.startsWith('data:image/')) {
+                        propertyImageUrl = `${cleanHost}/api/homestays/${validHomestayId}/image`; //[cite: 7]
+                    } else if (trimmedImg.startsWith('http://') || trimmedImg.startsWith('https://')) {
+                        propertyImageUrl = trimmedImg.replace(/^http:\/\//i, 'https://'); //[cite: 7]
+                    } else {
+                        const cleanPath = trimmedImg.startsWith('/') ? trimmedImg : `/${trimmedImg}`; //[cite: 7]
+                        propertyImageUrl = `${cleanHost}${cleanPath}`; //[cite: 7]
+                    }
+                }
+
+                const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in'; //[cite: 7]
+                const reviewUrl = `${clientUrl}/review?token=${reviewToken}`; //[cite: 7]
+
+                emailPromises.push(
+                    resend.emails.send({
+                        from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
+                        to: email.toLowerCase(),
+                        subject: `Booking Confirmed: ${formattedPropertyName}`,
+                        html: `
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                            <meta charset="utf-8">
+                            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        </head>
+                        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; margin: 0; padding: 20px 10px;">
+                            <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+                                <div style="background-color: #0d9488; padding: 20px 24px; text-align: center;">
+                                    <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">StayGuwahati</h1>
+                                </div>
+                                <div style="padding: 28px 24px;">
+                                    <div style="display: inline-block; background-color: #ccfbf1; color: #0f766e; padding: 6px 14px; border-radius: 20px; font-weight: 600; font-size: 13px; margin-bottom: 12px;">
+                                        ✓ Booking Confirmed
+                                    </div>
+                                    <h2 style="color: #0f172a; margin: 0 0 6px 0; font-size: 22px;">Hi ${firstName} ${lastName},</h2>
+                                    <p style="color: #475569; margin: 0 0 20px 0; font-size: 15px; line-height: 1.5;">
+                                        Your reservation for <strong>${formattedPropertyName}</strong> is all set!
+                                    </p>
+                                    <div style="border-radius: 10px; overflow: hidden; margin-bottom: 20px; border: 1px solid #e2e8f0; background-color: #f8fafc;">
+                                        <img src="${propertyImageUrl}" alt="${formattedPropertyName}" style="width: 100%; height: 220px; object-fit: cover; display: block; border: 0;" />
+                                        <div style="padding: 12px 16px; background-color: #ffffff; border-top: 1px solid #f1f5f9;">
+                                            <h3 style="margin: 0; font-size: 17px; color: #0f172a; font-weight: 700;">${formattedPropertyName}</h3>
+                                            <p style="margin: 4px 0 0 0; font-size: 13px; color: #64748b;">📍 ${propertyAddress}</p>
+                                        </div>
+                                    </div>
+                                    <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px; margin-bottom: 20px;">
+                                        <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #334155;">
+                                            <tr>
+                                                <td style="padding: 6px 0; font-weight: 600; color: #64748b; width: 35%;">Dates</td>
+                                                <td style="padding: 6px 0; font-weight: 600; color: #0f172a;">${formattedDates}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="padding: 6px 0; font-weight: 600; color: #64748b;">Nights</td>
+                                                <td style="padding: 6px 0; font-weight: 500;">${nights || 1} ${nights === 1 ? 'night' : 'nights'}</td>
+                                            </tr>
+                                            <tr>
+                                                <td style="padding: 6px 0; font-weight: 600; color: #64748b;">Total Amount</td>
+                                                <td style="padding: 6px 0; font-weight: 700; color: #0d9488; font-size: 16px;">₹${finalTotalPrice}</td>
+                                            </tr>
+                                        </table>
+                                    </div>
+                                    <div style="text-align: center; margin-bottom: 24px;">
+                                        <a href="${googleMapsUrl}" target="_blank" style="background-color: #0d9488; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 15px;">Get Directions to Property</a>
+                                    </div>
+                                    <div style="text-align: center; margin-bottom: 24px;">
+                                        <a href="${reviewUrl}" style="background-color: #0f766e; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 600; display: inline-block; font-size: 14px;">Leave a Review After Your Stay</a>
+                                    </div>
+                                </div>
+                            </div>
+                        </body>
+                        </html>
+                        `
+                    }).catch(err => console.error("Guest email dispatch error:", err.message))
+                ); //[cite: 7]
             }
-            await Promise.all(emailTasks);
+
+            if (targetEmail) {
+                emailPromises.push(
+                    resend.emails.send({
+                        from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
+                        to: targetEmail, 
+                        subject: 'New Booking Request for ' + formattedPropertyName,
+                        html: `
+                            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
+                                <h2>New Booking Received</h2>
+                                <p>You have received a new booking for <strong>${formattedPropertyName}</strong>.</p>
+                                <ul>
+                                    <li><strong>Guest Name:</strong> ${firstName} ${lastName}</li>
+                                    <li><strong>Guest Email:</strong> ${email}</li>
+                                    <li><strong>Guest Phone:</strong> ${phone}</li>
+                                    <li><strong>Dates:</strong> ${formattedDates}</li>
+                                    <li><strong>Total Amount:</strong> ₹${finalTotalPrice}</li>
+                                </ul>
+                            </div>
+                        `
+                    }).catch(err => console.error("Host email dispatch error:", err.message))
+                ); //[cite: 7]
+            }
+
+            await Promise.all(emailPromises); //[cite: 7]
         }
 
-        return res.status(201).json({
+        return res.status(200).json({
             success: true,
-            message: 'Booking request submitted. Waiting for host approval.',
-            data: booking
-        });
-    } catch (error) {
-        console.error('Create booking request error:', error);
-        if (error.name === 'ValidationError') return res.status(400).json({ success: false, message: error.message });
-        return res.status(500).json({ success: false, message: error.message || 'Server error while creating booking request.' });
-    }
-});
+            message: "Booking saved and confirmed!",
+            data: newBooking
+        }); //[cite: 7]
 
-// Host accepts/rejects a booking request. No payment is processed here.
+    } catch (error) {
+        if (error.name === 'ValidationError') {
+            return res.status(400).json({ success: false, message: error.message }); //[cite: 7]
+        }
+
+        if (error.code === 11000) {
+            return res.status(400).json({
+                success: false,
+                message: "This homestay was just booked for these dates. Please pick another date."
+            }); //[cite: 7]
+        }
+
+        res.status(500).json({ success: false, message: error.message || "Server error during booking." }); //[cite: 7]
+    }
+}); //[cite: 7]
+
+// 4.1 Update / Cancel Booking Status[cite: 7]
 app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-            return res.status(400).json({ success: false, message: 'Invalid Booking ID.' });
+            return res.status(400).json({ success: false, message: "Invalid Booking ID" }); //[cite: 7]
         }
 
-        const requestedStatus = String(req.body.status || '').trim();
-        const statusMap = { accept: 'Confirmed', accepted: 'Confirmed', confirm: 'Confirmed', confirmed: 'Confirmed', reject: 'Rejected', rejected: 'Rejected' };
-        const newStatus = statusMap[requestedStatus.toLowerCase()];
-        if (!newStatus) return res.status(400).json({ success: false, message: 'Status must be accept/confirmed or reject/rejected.' });
-
-        const booking = await Booking.findById(req.params.id).populate('homestayId');
-        if (!booking) return res.status(404).json({ success: false, message: 'Booking not found.' });
-
-        const property = booking.homestayId || await Homestay.findById(booking.homestayId || booking.propertyId);
-        const hostEmail = String(property?.ownerEmail || property?.host?.email || booking.hostEmail || '').toLowerCase().trim();
-        const actorEmail = String(req.user?.email || '').toLowerCase().trim();
-        if (!hostEmail || actorEmail !== hostEmail) {
-            return res.status(403).json({ success: false, message: 'You are not authorized to manage this booking.' });
+        const { status } = req.body; //[cite: 7]
+        if (!status) {
+            return res.status(400).json({ success: false, message: "Status field is required." }); //[cite: 7]
         }
 
-        if (booking.status !== 'Requested') {
-            return res.status(400).json({ success: false, message: `This booking is already ${booking.status}.` });
+        const updatedBooking = await Booking.findByIdAndUpdate(
+            req.params.id,
+            { status },
+            { new: true }
+        ); //[cite: 7]
+
+        if (!updatedBooking) {
+            return res.status(404).json({ success: false, message: "Booking not found." }); //[cite: 7]
         }
 
-        if (newStatus === 'Confirmed') {
-            const conflict = await Booking.findOne({
-                _id: { $ne: booking._id },
-                homestayId: booking.homestayId,
-                status: 'Confirmed',
-                checkInDate: { $lt: booking.checkOutDate },
-                checkOutDate: { $gt: booking.checkInDate }
-            });
-            if (conflict) return res.status(409).json({ success: false, message: 'Those dates have already been confirmed for another guest.' });
-        }
-
-        booking.status = newStatus;
-        await booking.save();
-
-        if (resend && booking.email) {
-            const approved = newStatus === 'Confirmed';
-            const clientUrl = process.env.CLIENT_URL || 'https://stayguwahati.in';
-            await resend.emails.send({
-                from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
-                to: booking.email,
-                subject: approved ? `Booking confirmed: ${booking.propertyName}` : `Booking request declined: ${booking.propertyName}`,
-                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a"><h2>StayGuwahati</h2><p>Hi ${booking.firstName || 'Guest'},</p><p>Your request for <strong>${booking.propertyName}</strong> has been <strong>${approved ? 'confirmed' : 'declined'}</strong>.</p><p>${booking.dates}<br>${booking.guests || 1} guest(s)<br>Total: ₹${Number(booking.totalPrice || 0).toLocaleString('en-IN')}</p>${approved ? '<p>The host will contact you regarding check-in arrangements.</p>' : '<p>Please search StayGuwahati for another available stay.</p>'}<a href="${clientUrl}/dashboard">View My Bookings</a></div>`
-            }).catch(e => console.error('Booking status email error:', e.message));
-        }
-
-        return res.json({ success: true, message: `Booking ${newStatus.toLowerCase()}.`, data: booking });
+        res.status(200).json({ success: true, message: "Booking status updated", data: updatedBooking }); //[cite: 7]
     } catch (error) {
-        console.error('Booking status update error:', error);
-        return res.status(500).json({ success: false, message: 'Server error while updating booking.' });
+        res.status(500).json({ success: false, message: "Server error." }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
 // 4.2 Get Reviews Route[cite: 7]
 app.get('/api/reviews', async (req, res) => {
@@ -730,6 +709,81 @@ app.get('/api/reviews', async (req, res) => {
 }); //[cite: 7]
 
 // 4.3 Post-Stay Review Submission Route[cite: 7]
+// Verify a review link before showing the review form.
+// A review is available only after a confirmed/completed stay has ended
+// and only while the one-time review token is still valid.
+app.get('/api/reviews/verify', async (req, res) => {
+    try {
+        const { token } = req.query;
+
+        if (!token || typeof token !== 'string') {
+            return res.status(400).json({
+                success: false,
+                message: 'Review token is missing.'
+            });
+        }
+
+        const booking = await Booking.findOne({ reviewToken: token }).lean();
+
+        if (!booking) {
+            return res.status(404).json({
+                success: false,
+                message: 'Invalid or expired review link.'
+            });
+        }
+
+        if (booking.reviewSubmitted) {
+            return res.status(400).json({
+                success: false,
+                message: 'A review has already been submitted for this booking.'
+            });
+        }
+
+        const status = String(booking.status || '').trim().toLowerCase();
+        const completedStatuses = ['completed', 'checkedout', 'checked-out', 'finished'];
+        const confirmedStatuses = ['confirmed', 'accepted', 'approved'];
+
+        // A booking can be reviewed once its checkout date has passed.
+        // This supports the current flow where confirmed bookings are not
+        // necessarily transitioned to a separate "Completed" status.
+        const checkout = booking.checkOutDate ? new Date(booking.checkOutDate) : null;
+        const stayHasEnded = checkout && !Number.isNaN(checkout.getTime())
+            ? checkout.getTime() <= Date.now()
+            : false;
+
+        const eligibleByStatus =
+            completedStatuses.includes(status) ||
+            (confirmedStatuses.includes(status) && stayHasEnded);
+
+        if (!eligibleByStatus) {
+            return res.status(403).json({
+                success: false,
+                message: 'You can review this stay only after the confirmed stay has been completed.'
+            });
+        }
+
+        res.json({
+            success: true,
+            data: {
+                propertyId: booking.propertyId || booking.homestayId
+                    ? String(booking.propertyId || booking.homestayId)
+                    : undefined,
+                propertyName: booking.propertyName || 'StayGuwahati Property',
+                guestName: `${booking.firstName || ''} ${booking.lastName || ''}`.trim() || 'Verified Guest',
+                checkInDate: booking.checkInDate || null,
+                checkOutDate: booking.checkOutDate || null,
+                reviewSubmitted: false
+            }
+        });
+    } catch (error) {
+        console.error('Review verification error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error while verifying the review link.'
+        });
+    }
+});
+
 app.post('/api/reviews', async (req, res) => {
     try {
         const { token, rating, comment, guestName } = req.body; //[cite: 7]
@@ -742,7 +796,30 @@ app.post('/api/reviews', async (req, res) => {
             return res.status(400).json({ success: false, message: "A rating is required to submit a review." }); //[cite: 7]
         }
 
-        const booking = await Booking.findOne({ reviewToken: token }); //[cite: 7]
+        const booking = await Booking.findOne({ reviewToken: token });
+
+        if (!booking) {
+            return res.status(400).json({ success: false, message: "Invalid or expired review token." });
+        }
+
+        const reviewStatus = String(booking.status || '').trim().toLowerCase();
+        const completedStatuses = ['completed', 'checkedout', 'checked-out', 'finished'];
+        const confirmedStatuses = ['confirmed', 'accepted', 'approved'];
+        const checkoutDate = booking.checkOutDate ? new Date(booking.checkOutDate) : null;
+        const stayHasEnded = checkoutDate && !Number.isNaN(checkoutDate.getTime())
+            ? checkoutDate.getTime() <= Date.now()
+            : false;
+
+        const eligibleReview =
+            completedStatuses.includes(reviewStatus) ||
+            (confirmedStatuses.includes(reviewStatus) && stayHasEnded);
+
+        if (!eligibleReview) {
+            return res.status(403).json({
+                success: false,
+                message: "You can submit a review only after the confirmed stay has been completed."
+            });
+        } //[cite: 7]
         if (!booking) {
             return res.status(400).json({ success: false, message: "Invalid or expired review token." }); //[cite: 7]
         }
@@ -894,109 +971,29 @@ app.post('/api/upload-images', (req, res) => {
         { name: 'images', maxCount: 10 }
     ]);
 
-    multiUpload(req, res, async (err) => {
+    multiUpload(req, res, (err) => {
         if (err instanceof multer.MulterError) {
-            return res.status(400).json({
-                success: false,
-                message: `Upload error: ${err.message}`
-            });
+            return res.status(400).json({ success: false, message: `Upload error: ${err.message}` }); //[cite: 7]
+        } else if (err) {
+            return res.status(400).json({ success: false, message: err.message }); //[cite: 7]
         }
 
-        if (err) {
-            return res.status(400).json({
-                success: false,
-                message: err.message
-            });
+        const uploadedFiles = [];
+        if (req.files) {
+            if (req.files.photos) uploadedFiles.push(...req.files.photos);
+            if (req.files.images) uploadedFiles.push(...req.files.images);
         }
 
-        try {
-            const uploadedFiles = [];
-
-            if (req.files) {
-                if (req.files.photos) uploadedFiles.push(...req.files.photos);
-                if (req.files.images) uploadedFiles.push(...req.files.images);
-            }
-
-            if (uploadedFiles.length === 0) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'No image files uploaded.'
-                });
-            }
-
-            const backendHost = (
-                process.env.BACKEND_URL ||
-                'https://stayguwahati-backend.onrender.com'
-            )
-                .replace(/\/$/, '')
-                .replace(/^http:\/\//i, 'https://');
-
-            const results = [];
-
-            for (const file of uploadedFiles) {
-                // Preferred production path: persistent Cloudinary storage.
-                if (cloudinaryConfigured) {
-                    try {
-                        const cloudResult = await uploadFileToCloudinary(
-                            file.path,
-                            file.originalname
-                        );
-
-                        if (cloudResult?.url) {
-                            results.push({
-                                url: cloudResult.url,
-                                publicId: cloudResult.publicId
-                            });
-
-                            // Remove the temporary Render copy after Cloudinary
-                            // has confirmed the upload.
-                            try {
-                                await fs.promises.unlink(file.path);
-                            } catch (unlinkError) {
-                                console.warn(
-                                    'Could not remove temporary upload:',
-                                    unlinkError.message
-                                );
-                            }
-
-                            continue;
-                        }
-                    } catch (cloudError) {
-                        console.error(
-                            '❌ Cloudinary upload failed:',
-                            cloudError.message
-                        );
-
-                        // Do not silently lose the file. Keep the local copy
-                        // and return its URL as a fallback.
-                    }
-                }
-
-                // Backward-compatible fallback when Cloudinary is unavailable.
-                results.push({
-                    url: `${backendHost}/uploads/${encodeURIComponent(file.filename)}`,
-                    publicId: null
-                });
-            }
-
-            const filePaths = results.map(item => item.url);
-
-            return res.status(200).json({
-                success: true,
-                images: filePaths,
-                urls: filePaths,
-                files: results,
-                storage: cloudinaryConfigured ? 'cloudinary' : 'local'
-            });
-        } catch (uploadError) {
-            console.error('❌ Image upload route error:', uploadError);
-
-            return res.status(500).json({
-                success: false,
-                message: 'Image upload failed.',
-                error: uploadError.message
-            });
+        if (uploadedFiles.length === 0) {
+            return res.status(400).json({ success: false, message: 'No image files uploaded.' });
         }
+
+        const backendHost = (process.env.BACKEND_URL || 'https://stayguwahati-backend.onrender.com')
+            .replace(/\/$/, '')
+            .replace(/^http:\/\//i, 'https://'); //[cite: 7]
+
+        const filePaths = uploadedFiles.map(file => `${backendHost}/uploads/${file.filename}`);
+        res.status(200).json({ success: true, images: filePaths, urls: filePaths });
     });
 });
 
@@ -1016,8 +1013,32 @@ const getHomestaysHandler = async (req, res) => {
         if (maxPrice) queryFilter.pricePerNight = { $lte: Number(maxPrice) }; //[cite: 7]
         if (feature) queryFilter.features = { $in: [feature] }; //[cite: 7]
 
-        const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 }); //[cite: 7]
-        res.status(200).json({ success: true, count: listings.length, data: listings }); //[cite: 7]
+        const listings = await Homestay.find(queryFilter)
+            .sort({ createdAt: -1 })
+            .lean();
+
+        // Preserve the real avatar URL for every listing.
+        // Only create a UI-Avatars fallback when the database value is empty.
+        for (const listing of listings) {
+            if (
+                listing.host &&
+                (
+                    !listing.host.avatar ||
+                    typeof listing.host.avatar !== 'string' ||
+                    listing.host.avatar.trim() === ''
+                )
+            ) {
+                const hostName = listing.host.name || 'Host';
+                listing.host.avatar =
+                    `https://ui-avatars.com/api/?name=${encodeURIComponent(hostName)}&background=0d9488&color=fff&size=128`;
+            }
+        }
+
+        res.status(200).json({
+            success: true,
+            count: listings.length,
+            data: listings
+        });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Server Error' }); //[cite: 7]
     }
@@ -1025,27 +1046,28 @@ const getHomestaysHandler = async (req, res) => {
 
 const getSingleHomestayHandler = async (req, res) => {
     try {
-        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+        const { id } = req.params;
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({
                 success: false,
-                message: 'Invalid ID format'
+                message: "Invalid ID format"
             });
         }
 
-        // Use lean() so the exact MongoDB avatar URL is returned
-        // without Mongoose getters modifying it.
-        const homestay = await Homestay
-            .findById(req.params.id)
-            .lean();
+        // Use lean() so the API returns the raw MongoDB value for host.avatar
+        // without allowing a Mongoose getter to replace it.
+        const homestay = await Homestay.findById(id).lean();
 
         if (!homestay) {
             return res.status(404).json({
                 success: false,
-                message: 'Property not found'
+                message: "Property not found"
             });
         }
 
-        // Only create fallback avatar if the real avatar is missing.
+        // Only generate a fallback avatar when MongoDB genuinely has no avatar.
+        // Never overwrite an existing Cloudinary URL.
         if (
             homestay.host &&
             (
@@ -1054,39 +1076,28 @@ const getSingleHomestayHandler = async (req, res) => {
                 homestay.host.avatar.trim() === ''
             )
         ) {
+            const hostName = homestay.host.name || 'Host';
             homestay.host.avatar =
-                `https://ui-avatars.com/api/?name=${encodeURIComponent(
-                    homestay.host.name || 'Host'
-                )}&background=0d9488&color=fff&size=128`;
+                `https://ui-avatars.com/api/?name=${encodeURIComponent(hostName)}&background=0d9488&color=fff&size=128`;
         }
 
         console.log(
-            '[HOMESTAY API] Host:',
-            homestay.host?.name
-        );
-
-        console.log(
-            '[HOMESTAY API] Avatar:',
-            homestay.host?.avatar
+            `[HOMESTAY API] ${id} | Host: ${homestay.host?.name || 'Unknown'} | Avatar: ${homestay.host?.avatar || 'None'}`
         );
 
         return res.status(200).json({
             success: true,
             data: homestay
         });
-
     } catch (error) {
-        console.error(
-            'Error fetching single homestay:',
-            error
-        );
-
+        console.error('[HOMESTAY API] Error:', error);
         return res.status(500).json({
             success: false,
             message: 'Server Error'
         });
     }
-};
+}; //[cite: 7]
+
 app.get('/api/homestays', getHomestaysHandler); //[cite: 7]
 app.get('/api/properties', getHomestaysHandler); //[cite: 7]
 
@@ -1144,26 +1155,11 @@ app.post('/api/homestays', async (req, res) => {
         const formattedData = {
             ...req.body,
             host: {
-    name:
-        req.body.owner ||
-        req.body.host?.name ||
-        'Unknown Host',
-
-    phone:
-        req.body.phone ||
-        req.body.host?.phone ||
-        '',
-
-    email:
-        req.body.email ||
-        req.body.host?.email ||
-        '',
-
-    avatar:
-        req.body.avatar ||
-        req.body.host?.avatar ||
-        ''
-},
+                name: req.body.owner || (req.body.host && req.body.host.name) || "Unknown Host",
+                phone: req.body.phone || (req.body.host && req.body.host.phone) || "",
+                email: req.body.email || (req.body.host && req.body.host.email) || "",
+                avatar: req.body.avatar || (req.body.host && req.body.host.avatar) || ""
+            },
             status: req.body.status ? req.body.status.toLowerCase() : 'pending'
         }; //[cite: 7]
 
@@ -1176,84 +1172,25 @@ app.post('/api/homestays', async (req, res) => {
 
 app.put('/api/homestays/:id', authenticateToken, async (req, res) => {
     try {
-        const { id } = req.params;
-
-        if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid Property ID format'
-            });
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ success: false, message: "Invalid Property ID format" }); //[cite: 7]
         }
 
-        const property = await Homestay.findById(id);
+        const updatedProperty = await Homestay.findByIdAndUpdate(
+            req.params.id,
+            { ...req.body },
+            { new: true, runValidators: true }
+        ); //[cite: 7]
 
-        if (!property) {
-            return res.status(404).json({
-                success: false,
-                message: 'Property not found.'
-            });
+        if (!updatedProperty) {
+            return res.status(404).json({ success: false, message: "Property not found." }); //[cite: 7]
         }
 
-        const editableFields = [
-            'title',
-            'locality',
-            'description',
-            'pricePerNight',
-            'lat',
-            'lng',
-            'images',
-            'features',
-            'isAvailable'
-        ];
-
-        editableFields.forEach((field) => {
-            if (req.body[field] !== undefined) {
-                property[field] = req.body[field];
-            }
-        });
-
-        // Merge host fields instead of replacing the required host object.
-        if (req.body.host && typeof req.body.host === 'object') {
-            if (req.body.host.name !== undefined) {
-                property.host.name = req.body.host.name;
-            }
-            if (req.body.host.email !== undefined) {
-                property.host.email = req.body.host.email;
-            }
-            if (req.body.host.phone !== undefined) {
-                property.host.phone = req.body.host.phone;
-            }
-            if (req.body.host.avatar !== undefined) {
-                property.host.avatar = req.body.host.avatar;
-            }
-            if (req.body.host.isVerified !== undefined) {
-                property.host.isVerified = req.body.host.isVerified;
-            }
-        }
-
-        await property.save();
-
-        return res.status(200).json({
-            success: true,
-            message: 'Property updated successfully!',
-            data: property
-        });
+        res.status(200).json({ success: true, message: "Property updated successfully!", data: updatedProperty }); //[cite: 7]
     } catch (error) {
-        console.error('❌ Property update error:', error);
-
-        return res.status(500).json({
-            success: false,
-            message: 'Server error during update.',
-            error: error.message,
-            details: error.errors
-                ? Object.keys(error.errors).map((key) => ({
-                    field: key,
-                    message: error.errors[key].message
-                }))
-                : undefined
-        });
+        res.status(500).json({ success: false, message: "Server error during update." }); //[cite: 7]
     }
-});
+}); //[cite: 7]
 
 app.delete('/api/homestays/:id', authenticateToken, async (req, res) => {
     try {
