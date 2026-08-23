@@ -1286,14 +1286,49 @@ app.get('/api/homestays/:id/image', async (req, res) => {
 
 app.post('/api/homestays', async (req, res) => {
     try {
+        // Normalize the new listing fields before Mongoose validation.
+        // This keeps the API compatible with the existing frontend payload
+        // while safely storing the Airbnb-style bathroom categories.
+        const rawBathrooms = req.body.bathrooms || {};
+
+        const privateAttached = Math.max(
+            0,
+            Math.min(20, Number(rawBathrooms.privateAttached) || 0)
+        );
+        const dedicated = Math.max(
+            0,
+            Math.min(20, Number(rawBathrooms.dedicated) || 0)
+        );
+        const shared = Math.max(
+            0,
+            Math.min(20, Number(rawBathrooms.shared) || 0)
+        );
+
+        const bathroomTotal = privateAttached + dedicated + shared;
+
+        const parsedBedrooms = Number(req.body.bedrooms);
+
         const formattedData = {
             ...req.body,
+
+            bedrooms: Number.isFinite(parsedBedrooms)
+                ? Math.max(1, Math.min(20, parsedBedrooms))
+                : 1,
+
+            bathrooms: {
+                privateAttached,
+                dedicated,
+                shared,
+                total: bathroomTotal
+            },
+
             host: {
                 name: req.body.owner || (req.body.host && req.body.host.name) || "Unknown Host",
                 phone: req.body.phone || (req.body.host && req.body.host.phone) || "",
                 email: req.body.email || (req.body.host && req.body.host.email) || "",
                 avatar: req.body.avatar || (req.body.host && req.body.host.avatar) || ""
             },
+
             status: req.body.status ? req.body.status.toLowerCase() : 'pending'
         }; //[cite: 7]
 

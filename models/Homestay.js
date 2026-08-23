@@ -66,6 +66,42 @@ const homestaySchema = new mongoose.Schema(
             index: true
         },
 
+        // Number of bedrooms available to guests.
+        bedrooms: {
+            type: Number,
+            required: [true, 'Number of bedrooms is required'],
+            min: [1, 'At least one bedroom is required'],
+            max: [20, 'Maximum 20 bedrooms allowed']
+        },
+
+        // Bathroom breakdown used by the listing form.
+        bathrooms: {
+            privateAttached: {
+                type: Number,
+                default: 0,
+                min: 0,
+                max: 20
+            },
+            dedicated: {
+                type: Number,
+                default: 0,
+                min: 0,
+                max: 20
+            },
+            shared: {
+                type: Number,
+                default: 0,
+                min: 0,
+                max: 20
+            },
+            total: {
+                type: Number,
+                default: 0,
+                min: 0,
+                max: 60
+            }
+        },
+
         cancellationPolicy: {
             type: String,
             enum: ['flexible', 'moderate', 'strict'],
