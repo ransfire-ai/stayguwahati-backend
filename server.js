@@ -998,6 +998,22 @@ app.post('/api/upload-images', (req, res) => {
 });
 
 // 6. Homestay Operations[cite: 7]
+
+// Public verification is derived from moderation status.
+// Approved listings are verified; pending/rejected listings are not.
+const addVerificationFlag = (listing) => {
+    if (!listing) return listing;
+
+    const status = String(listing.status || '').trim().toLowerCase();
+    const isVerified = status === 'approved';
+
+    listing.isVerified = isVerified;
+    listing.verified = isVerified;
+
+    return listing;
+};
+
+
 const getHomestaysHandler = async (req, res) => {
     try {
         const { locality, maxPrice, feature, status } = req.query; //[cite: 7]
@@ -1065,6 +1081,9 @@ const getSingleHomestayHandler = async (req, res) => {
                 message: "Property not found"
             });
         }
+
+        // Keep single-property verification consistent with the public listing API.
+        addVerificationFlag(homestay);
 
         // Only generate a fallback avatar when MongoDB genuinely has no avatar.
         // Never overwrite an existing Cloudinary URL.
@@ -1212,23 +1231,67 @@ app.delete('/api/homestays/:id', authenticateToken, async (req, res) => {
 app.patch('/api/admin/homestays/:id/status', authenticateToken, authorizeAdmin, async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-            return res.status(400).json({ success: false, message: "Invalid Property ID format" }); //[cite: 7]
+            return res.status(400).json({
+                success: false,
+                message: "Invalid Property ID format"
+            });
         }
 
-        if (!req.body.status) {
-            return res.status(400).json({ success: false, message: "Status is required in request body" }); //[cite: 7]
+        const requestedStatus = String(req.body.status || '').trim().toLowerCase();
+
+        if (!requestedStatus) {
+            return res.status(400).json({
+                success: false,
+                message: "Status is required in request body"
+            });
+        }
+
+        const allowedStatuses = ['pending', 'approved', 'rejected'];
+
+        if (!allowedStatuses.includes(requestedStatus)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid status. Use pending, approved, or rejected."
+            });
         }
 
         const updatedProperty = await Homestay.findByIdAndUpdate(
             req.params.id,
-            { status: req.body.status.toLowerCase() },
+            { status: requestedStatus },
             { new: true, runValidators: true }
-        ); //[cite: 7]
-        
-        if (!updatedProperty) return res.status(404).json({ success: false, message: "Property not found." }); //[cite: 7]
-        res.json({ success: true, message: "Status updated!", data: updatedProperty }); //[cite: 7]
+        );
+
+        if (!updatedProperty) {
+            return res.status(404).json({
+                success: false,
+                message: "Property not found."
+            });
+        }
+
+        // Approved = Verified. Pending/rejected = Not Verified.
+        // The flag is derived here so this also works with older Homestay
+        // documents that do not contain an isVerified field.
+        const propertyData = updatedProperty.toObject
+            ? updatedProperty.toObject()
+            : updatedProperty;
+
+        addVerificationFlag(propertyData);
+
+        res.json({
+            success: true,
+            message: requestedStatus === 'approved'
+                ? "Listing approved and verified!"
+                : requestedStatus === 'rejected'
+                    ? "Listing rejected and verification removed."
+                    : "Listing moved to pending review.",
+            data: propertyData
+        });
     } catch (err) {
-        res.status(500).json({ success: false, message: "Server error." }); //[cite: 7]
+        console.error("Admin status update error:", err);
+        res.status(500).json({
+            success: false,
+            message: "Server error."
+        });
     }
 }); //[cite: 7]
 
