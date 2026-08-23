@@ -491,7 +491,7 @@ app.post('/api/bookings', async (req, res) => {
             hostEmail: targetEmail,
             nights: nights || 1,
             totalPrice: finalTotalPrice,
-            status: req.body.status || 'Confirmed',
+            status: 'Requested',
             reviewToken,
             reviewSubmitted: false,
             reviewEmailSent: false
@@ -542,7 +542,7 @@ app.post('/api/bookings', async (req, res) => {
                     resend.emails.send({
                         from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
                         to: email.toLowerCase(),
-                        subject: `Booking Confirmed: ${formattedPropertyName}`,
+                        subject: `Booking Request Received: ${formattedPropertyName}`,
                         html: `
                         <!DOCTYPE html>
                         <html>
@@ -557,11 +557,11 @@ app.post('/api/bookings', async (req, res) => {
                                 </div>
                                 <div style="padding: 28px 24px;">
                                     <div style="display: inline-block; background-color: #ccfbf1; color: #0f766e; padding: 6px 14px; border-radius: 20px; font-weight: 600; font-size: 13px; margin-bottom: 12px;">
-                                        ✓ Booking Confirmed
+                                        ✓ Booking Request Received
                                     </div>
                                     <h2 style="color: #0f172a; margin: 0 0 6px 0; font-size: 22px;">Hi ${firstName} ${lastName},</h2>
                                     <p style="color: #475569; margin: 0 0 20px 0; font-size: 15px; line-height: 1.5;">
-                                        Your reservation for <strong>${formattedPropertyName}</strong> is all set!
+                                        Your booking request for <strong>${formattedPropertyName}</strong> has been sent to the host. We will notify you when the host accepts or rejects it.
                                     </p>
                                     <div style="border-radius: 10px; overflow: hidden; margin-bottom: 20px; border: 1px solid #e2e8f0; background-color: #f8fafc;">
                                         <img src="${propertyImageUrl}" alt="${formattedPropertyName}" style="width: 100%; height: 220px; object-fit: cover; display: block; border: 0;" />
@@ -653,29 +653,133 @@ app.post('/api/bookings', async (req, res) => {
 app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-            return res.status(400).json({ success: false, message: "Invalid Booking ID" }); //[cite: 7]
+            return res.status(400).json({ success: false, message: "Invalid Booking ID" });
         }
 
-        const { status } = req.body; //[cite: 7]
-        if (!status) {
-            return res.status(400).json({ success: false, message: "Status field is required." }); //[cite: 7]
+        const requestedStatus = String(req.body.status || '').trim().toLowerCase();
+        const allowedStatuses = ['confirmed', 'rejected', 'cancelled', 'completed'];
+
+        if (!allowedStatuses.includes(requestedStatus)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid booking status."
+            });
         }
 
-        const updatedBooking = await Booking.findByIdAndUpdate(
-            req.params.id,
-            { status },
-            { new: true }
-        ); //[cite: 7]
-
-        if (!updatedBooking) {
-            return res.status(404).json({ success: false, message: "Booking not found." }); //[cite: 7]
+        const booking = await Booking.findById(req.params.id);
+        if (!booking) {
+            return res.status(404).json({ success: false, message: "Booking not found." });
         }
 
-        res.status(200).json({ success: true, message: "Booking status updated", data: updatedBooking }); //[cite: 7]
+        const currentStatus = String(booking.status || 'Requested').trim().toLowerCase();
+        const userEmail = String(req.user?.email || '').trim().toLowerCase();
+        const userRole = String(req.user?.role || '').trim().toLowerCase();
+
+        const guestEmail = String(booking.email || '').trim().toLowerCase();
+        const hostEmail = String(booking.hostEmail || '').trim().toLowerCase();
+
+        const isAdmin = userRole === 'admin';
+        const isHost = Boolean(userEmail && hostEmail && userEmail === hostEmail);
+        const isGuest = Boolean(userEmail && guestEmail && userEmail === guestEmail);
+
+        if (!isAdmin && !isHost && !isGuest) {
+            return res.status(403).json({
+                success: false,
+                message: "You are not authorized to update this booking."
+            });
+        }
+
+        if (['confirmed', 'rejected', 'completed'].includes(requestedStatus) && !isAdmin && !isHost) {
+            return res.status(403).json({
+                success: false,
+                message: "Only the host can accept, reject, or complete a booking."
+            });
+        }
+
+        if (requestedStatus === 'cancelled' && !isAdmin && !isHost && !isGuest) {
+            return res.status(403).json({
+                success: false,
+                message: "Only the guest or host can cancel this booking."
+            });
+        }
+
+        const validTransitions = {
+            requested: ['confirmed', 'rejected', 'cancelled'],
+            confirmed: ['cancelled', 'completed'],
+            rejected: [],
+            cancelled: [],
+            completed: []
+        };
+
+        if (!validTransitions[currentStatus]?.includes(requestedStatus)) {
+            return res.status(400).json({
+                success: false,
+                message: `A ${currentStatus || 'current'} booking cannot be changed to ${requestedStatus}.`
+            });
+        }
+
+        // Guest cancellation follows the property's selected cancellation policy.
+        if (requestedStatus === 'cancelled' && isGuest && !isHost && !isAdmin) {
+            const propertyId = booking.propertyId || booking.homestayId;
+            const property = propertyId && mongoose.Types.ObjectId.isValid(String(propertyId))
+                ? await Homestay.findById(propertyId).lean()
+                : null;
+
+            const policy = String(property?.cancellationPolicy || 'flexible').toLowerCase();
+            const checkIn = new Date(booking.checkInDate);
+
+            if (!Number.isFinite(checkIn.getTime())) {
+                return res.status(400).json({
+                    success: false,
+                    message: "This booking does not have a valid check-in date."
+                });
+            }
+
+            const hoursUntilCheckIn = (checkIn.getTime() - Date.now()) / 3600000;
+
+            if (policy === 'flexible' && hoursUntilCheckIn < 24) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Flexible cancellation is available only up to 24 hours before check-in."
+                });
+            }
+
+            if (policy === 'moderate' && hoursUntilCheckIn < 120) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Moderate cancellation is available only up to 5 days before check-in."
+                });
+            }
+
+            if (policy === 'strict' && currentStatus === 'confirmed') {
+                return res.status(400).json({
+                    success: false,
+                    message: "This property has a Strict cancellation policy. Please contact the host or StayGuwahati support to request cancellation."
+                });
+            }
+        }
+
+        booking.status =
+            requestedStatus === 'cancelled' ? 'Cancelled' :
+            requestedStatus === 'confirmed' ? 'Confirmed' :
+            requestedStatus === 'rejected' ? 'Rejected' :
+            'Completed';
+
+        await booking.save();
+
+        res.status(200).json({
+            success: true,
+            message: `Booking ${booking.status.toLowerCase()} successfully.`,
+            data: booking
+        });
     } catch (error) {
-        res.status(500).json({ success: false, message: "Server error." }); //[cite: 7]
+        console.error("Booking status update error:", error);
+        res.status(500).json({
+            success: false,
+            message: "Server error while updating booking."
+        });
     }
-}); //[cite: 7]
+});
 
 // 4.2 Get Reviews Route[cite: 7]
 app.get('/api/reviews', async (req, res) => {
@@ -997,6 +1101,16 @@ app.post('/api/upload-images', (req, res) => {
     });
 });
 
+// Cancellation policy normalization for older listings.
+const normalizeCancellationPolicy = (listing) => {
+    if (!listing) return listing;
+    const policy = String(listing.cancellationPolicy || 'flexible').toLowerCase();
+    listing.cancellationPolicy = ['flexible', 'moderate', 'strict'].includes(policy)
+        ? policy
+        : 'flexible';
+    return listing;
+};
+
 // 6. Homestay Operations[cite: 7]
 
 // Public verification is derived from moderation status.
@@ -1084,6 +1198,7 @@ const getSingleHomestayHandler = async (req, res) => {
 
         // Keep single-property verification consistent with the public listing API.
         addVerificationFlag(homestay);
+        normalizeCancellationPolicy(homestay);
 
         // Only generate a fallback avatar when MongoDB genuinely has no avatar.
         // Never overwrite an existing Cloudinary URL.

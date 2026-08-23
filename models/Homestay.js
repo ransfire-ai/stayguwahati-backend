@@ -66,6 +66,13 @@ const homestaySchema = new mongoose.Schema(
             index: true
         },
 
+        cancellationPolicy: {
+            type: String,
+            enum: ['flexible', 'moderate', 'strict'],
+            default: 'flexible',
+            index: true
+        },
+
         lat: {
             type: Number,
             required: [true, 'Latitude coordinate is required']
