@@ -1268,23 +1268,91 @@ app.post('/api/homestays', async (req, res) => {
 
 app.put('/api/homestays/:id', authenticateToken, async (req, res) => {
     try {
-        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-            return res.status(400).json({ success: false, message: "Invalid Property ID format" }); //[cite: 7]
+        const { id } = req.params;
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid Property ID format'
+            });
         }
 
-        const updatedProperty = await Homestay.findByIdAndUpdate(
-            req.params.id,
-            { ...req.body },
-            { new: true, runValidators: true }
-        ); //[cite: 7]
+        const existingProperty = await Homestay.findById(id);
 
-        if (!updatedProperty) {
-            return res.status(404).json({ success: false, message: "Property not found." }); //[cite: 7]
+        if (!existingProperty) {
+            return res.status(404).json({
+                success: false,
+                message: 'Property not found.'
+            });
         }
 
-        res.status(200).json({ success: true, message: "Property updated successfully!", data: updatedProperty }); //[cite: 7]
+        // Only update fields that are actually supplied.
+        const allowedFields = [
+            'title',
+            'locality',
+            'description',
+            'pricePerNight',
+            'lat',
+            'lng',
+            'images',
+            'features',
+            'isAvailable'
+        ];
+
+        allowedFields.forEach((field) => {
+            if (req.body[field] !== undefined) {
+                existingProperty[field] = req.body[field];
+            }
+        });
+
+        // IMPORTANT:
+        // Merge host fields instead of replacing the complete host object.
+        // This preserves required host.name and host.email.
+        if (req.body.host && typeof req.body.host === 'object') {
+            if (req.body.host.name !== undefined) {
+                existingProperty.host.name = req.body.host.name;
+            }
+
+            if (req.body.host.email !== undefined) {
+                existingProperty.host.email = req.body.host.email;
+            }
+
+            if (req.body.host.phone !== undefined) {
+                existingProperty.host.phone = req.body.host.phone;
+            }
+
+            if (req.body.host.avatar !== undefined) {
+                existingProperty.host.avatar = req.body.host.avatar;
+            }
+
+            if (req.body.host.isVerified !== undefined) {
+                existingProperty.host.isVerified =
+                    req.body.host.isVerified;
+            }
+        }
+
+        await existingProperty.save();
+
+        return res.status(200).json({
+            success: true,
+            message: 'Property updated successfully!',
+            data: existingProperty
+        });
+
     } catch (error) {
-        res.status(500).json({ success: false, message: "Server error during update." }); //[cite: 7]
+        console.error('❌ Property update error:', error);
+
+        return res.status(500).json({
+            success: false,
+            message: 'Server error during update.',
+            error: error.message,
+            details: error.errors
+                ? Object.keys(error.errors).map((key) => ({
+                    field: key,
+                    message: error.errors[key].message
+                }))
+                : undefined
+        });
     }
 }); //[cite: 7]
 
