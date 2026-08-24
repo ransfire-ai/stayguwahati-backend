@@ -199,16 +199,120 @@ if (cloudinaryConfigured) {
 }
 
 
-// Database Connection[cite: 7]
-if (!process.env.MONGODB_URI) {
-    console.error('❌ MONGODB_URI environment variable is missing!'); //[cite: 7]
-} else {
-    mongoose.connect(process.env.MONGODB_URI) //[cite: 7]
-        .then(() => {
-            console.log('Connected securely to MongoDB Atlas Instance.'); //[cite: 7]
-            initScheduledJobs(); //[cite: 7]
+// ============================================================
+// ROBUST MONGODB CONNECTION / READINESS
+// ============================================================
+// Do not let Mongoose buffer database queries during a Render cold start.
+// The previous implementation could leave /api/homestays waiting for a
+// long time while MongoDB was still connecting.
+mongoose.set('bufferCommands', false);
+
+let databaseConnectedAt = null;
+let databaseLastError = null;
+let databaseConnectPromise = null;
+let scheduledJobsStarted = false;
+
+function getDatabaseState() {
+    return {
+        readyState: mongoose.connection.readyState,
+        connected: mongoose.connection.readyState === 1,
+        connecting: mongoose.connection.readyState === 2,
+        disconnected: mongoose.connection.readyState === 0,
+        database: mongoose.connection.name || null,
+        connectedAt: databaseConnectedAt,
+        lastError: databaseLastError
+    };
+}
+
+async function connectDatabase() {
+    if (!process.env.MONGODB_URI) {
+        databaseLastError = 'MONGODB_URI environment variable is missing.';
+        throw new Error(databaseLastError);
+    }
+
+    if (mongoose.connection.readyState === 1) {
+        return mongoose.connection;
+    }
+
+    if (databaseConnectPromise) {
+        return databaseConnectPromise;
+    }
+
+    databaseConnectPromise = mongoose.connect(process.env.MONGODB_URI, {
+        serverSelectionTimeoutMS: 8000,
+        connectTimeoutMS: 8000,
+        socketTimeoutMS: 15000,
+        maxPoolSize: 10,
+        minPoolSize: 1,
+        maxIdleTimeMS: 30000,
+        heartbeatFrequencyMS: 10000,
+        family: 4
+    })
+        .then((connection) => {
+            databaseConnectedAt = new Date().toISOString();
+            databaseLastError = null;
+            console.log(`✅ MongoDB connected: ${connection.connection.name || 'database'}`);
+
+            if (!scheduledJobsStarted) {
+                scheduledJobsStarted = true;
+                initScheduledJobs();
+            }
+
+            return connection;
         })
-        .catch(err => console.error('❌ DATABASE CONNECTION CRASHED!', err.message)); //[cite: 7]
+        .catch((error) => {
+            databaseLastError = error.message || 'MongoDB connection failed.';
+            console.error('❌ MongoDB connection failed:', databaseLastError);
+            throw error;
+        })
+        .finally(() => {
+            databaseConnectPromise = null;
+        });
+
+    return databaseConnectPromise;
+}
+
+mongoose.connection.on('connected', () => {
+    databaseConnectedAt = databaseConnectedAt || new Date().toISOString();
+    databaseLastError = null;
+    console.log('🟢 MongoDB connection is ready.');
+});
+
+mongoose.connection.on('disconnected', () => {
+    console.warn('🟠 MongoDB disconnected. Waiting for automatic reconnect...');
+});
+
+mongoose.connection.on('error', (error) => {
+    databaseLastError = error?.message || 'MongoDB connection error.';
+    console.error('❌ MongoDB connection error:', databaseLastError);
+});
+
+async function requireDatabase(req, res, next) {
+    if (mongoose.connection.readyState === 1) return next();
+
+    try {
+        await Promise.race([
+            connectDatabase(),
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Database readiness timeout.')), 5000)
+            )
+        ]);
+
+        if (mongoose.connection.readyState !== 1) {
+            throw new Error('MongoDB is not ready.');
+        }
+
+        return next();
+    } catch (error) {
+        databaseLastError = error.message || 'Database unavailable.';
+        return res.status(503).json({
+            success: false,
+            code: 'DATABASE_UNAVAILABLE',
+            message: 'StayGuwahati database is temporarily unavailable. Please retry in a few seconds.',
+            retryAfterSeconds: 5,
+            database: getDatabaseState()
+        });
+    }
 }
 
 // --- BACKGROUND CRON JOBS ---[cite: 7]
@@ -301,15 +405,30 @@ const authorizeAdmin = (req, res, next) => {
     return res.status(403).json({ success: false, message: 'Access denied. Admin rights required.' }); //[cite: 7]
 }; //[cite: 7]
 
-// Basic health/status endpoint
+// Basic health/status endpoint. Keep it independent of MongoDB so Render
+// can always use it as a liveness check.
 app.get('/api/health', (req, res) => {
+    const db = getDatabaseState();
     res.status(200).json({
         success: true,
         service: 'StayGuwahati backend',
         storage: cloudinaryConfigured ? 'cloudinary' : 'local',
-        uploadsDirectory: uploadDir
+        uploadsDirectory: uploadDir,
+        database: {
+            connected: db.connected,
+            connecting: db.connecting,
+            readyState: db.readyState,
+            database: db.database,
+            connectedAt: db.connectedAt,
+            lastError: db.lastError
+        },
+        timestamp: new Date().toISOString()
     });
 });
+
+// All API routes below this point use MongoDB. Fail fast with a clean 503
+// instead of allowing Mongoose to buffer queries during a cold start.
+app.use('/api', requireDatabase);
 
 // --- API ROUTES ---[cite: 7]
 
@@ -1010,52 +1129,6 @@ app.post('/api/reviews', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/api/reviews', async (req, res) => {
-    try {
-        const { token, rating, comment, guestName } = req.body; //[cite: 7]
-
-        if (!token) {
-            return res.status(400).json({ success: false, message: "Review token is missing." }); //[cite: 7]
-        }
-
-        if (!rating) {
-            return res.status(400).json({ success: false, message: "A rating is required to submit a review." }); //[cite: 7]
-        }
-
-        const booking = await Booking.findOne({ reviewToken: token }); //[cite: 7]
-        if (!booking) {
-            return res.status(400).json({ success: false, message: "Invalid or expired review token." }); //[cite: 7]
-        }
-
-        if (booking.reviewSubmitted) {
-            return res.status(400).json({ success: false, message: "A review has already been submitted for this booking." }); //[cite: 7]
-        }
-
-        const newReview = new Review({
-            propertyId: booking.propertyId || booking.homestayId,
-            bookingId: booking._id,
-            guestName: guestName || `${booking.firstName} ${booking.lastName}`.trim() || 'Verified Guest',
-            rating: Number(rating),
-            comment: comment || ''
-        }); //[cite: 7]
-
-        await newReview.save(); //[cite: 7]
-
-        booking.reviewSubmitted = true; //[cite: 7]
-        booking.reviewToken = undefined; //[cite: 7]
-        await booking.save(); //[cite: 7]
-
-        res.status(200).json({ 
-            success: true, 
-            message: "Thank you! Your verified review has been submitted successfully.",
-            data: newReview
-        }); //[cite: 7]
-    } catch (error) {
-        console.error("Review submission error:", error); //[cite: 7]
-        res.status(500).json({ success: false, message: "Server error during review submission." }); //[cite: 7]
-    }
-}); //[cite: 7]
-
 // 4.5 Send Message Route[cite: 7]
 app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
     try {
@@ -1282,24 +1355,61 @@ app.post('/api/upload-images', (req, res) => {
 
 // 6. Homestay Operations[cite: 7]
 const getHomestaysHandler = async (req, res) => {
-    try {
-        const { locality, maxPrice, feature, status } = req.query; //[cite: 7]
-        let queryFilter = {}; //[cite: 7]
+    const startedAt = Date.now();
 
-        if (status) {
-            queryFilter.status = status.toLowerCase(); //[cite: 7]
-        } else {
-            queryFilter.status = 'approved'; //[cite: 7]
+    try {
+        const { locality, maxPrice, feature, status } = req.query;
+        const queryFilter = {};
+
+        if (status) queryFilter.status = String(status).toLowerCase();
+        else queryFilter.status = 'approved';
+
+        if (locality) queryFilter.locality = String(locality).trim();
+
+        if (maxPrice) {
+            const parsedMaxPrice = Number(maxPrice);
+            if (!Number.isFinite(parsedMaxPrice) || parsedMaxPrice < 0) {
+                return res.status(400).json({
+                    success: false,
+                    code: 'INVALID_MAX_PRICE',
+                    message: 'maxPrice must be a valid positive number.'
+                });
+            }
+            queryFilter.pricePerNight = { $lte: parsedMaxPrice };
         }
 
-        if (locality) queryFilter.locality = locality; //[cite: 7]
-        if (maxPrice) queryFilter.pricePerNight = { $lte: Number(maxPrice) }; //[cite: 7]
-        if (feature) queryFilter.features = { $in: [feature] }; //[cite: 7]
+        if (feature) queryFilter.features = { $in: [String(feature)] };
 
-        const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 }); //[cite: 7]
-        res.status(200).json({ success: true, count: listings.length, data: listings }); //[cite: 7]
+        const listings = await Homestay
+            .find(queryFilter)
+            .sort({ createdAt: -1 })
+            .maxTimeMS(6000)
+            .lean();
+
+        const durationMs = Date.now() - startedAt;
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.set('Pragma', 'no-cache');
+        res.set('Expires', '0');
+
+        console.log(`[HOMESTAYS] ${listings.length} listing(s) returned in ${durationMs}ms`, queryFilter);
+
+        return res.status(200).json({
+            success: true,
+            count: listings.length,
+            data: listings,
+            meta: { durationMs, databaseReadyState: mongoose.connection.readyState }
+        });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Server Error' }); //[cite: 7]
+        const durationMs = Date.now() - startedAt;
+        console.error(`[HOMESTAYS] Failed after ${durationMs}ms:`, error?.message || error);
+
+        return res.status(503).json({
+            success: false,
+            code: 'HOMESTAYS_DATABASE_ERROR',
+            message: 'Unable to load properties from the database right now. Please retry.',
+            retryAfterSeconds: 5,
+            durationMs
+        });
     }
 }; //[cite: 7]
 
@@ -1582,6 +1692,21 @@ app.use((err, req, res, next) => {
 }); //[cite: 7]
 
 const PORT = process.env.PORT || 5000; //[cite: 7]
-app.listen(PORT, () => {
-    console.log(`StayGuwahati Core Engine running on port ${PORT}`); //[cite: 7]
+
+const server = app.listen(PORT, () => {
+    console.log(`🚀 StayGuwahati Core Engine running on port ${PORT}`);
+});
+
+// Warm MongoDB immediately after the HTTP server starts. If the first
+// connection fails, database-backed requests will retry through the
+// requireDatabase middleware instead of hanging.
+connectDatabase().catch((error) => {
+    console.error(
+        '⚠️ Initial MongoDB connection was not ready. The server remains online and database requests will retry automatically.',
+        error?.message || error
+    );
+});
+
+server.on('error', (error) => {
+    console.error('❌ HTTP server error:', error);
 });
