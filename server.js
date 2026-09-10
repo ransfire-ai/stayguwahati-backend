@@ -492,55 +492,6 @@ app.get('/api/bookings', async (req, res) => {
     }
 }); //[cite: 7]
 
-// Check whether a property's requested dates overlap an existing active booking.
-app.get('/api/bookings/availability', async (req, res) => {
-    try {
-        const { propertyId, checkIn, checkOut } = req.query;
-
-        if (!propertyId || !mongoose.Types.ObjectId.isValid(propertyId)) {
-            return res.status(400).json({
-                success: false,
-                message: 'A valid property ID is required.'
-            });
-        }
-
-        const parsedCheckIn = new Date(String(checkIn || ''));
-        const parsedCheckOut = new Date(String(checkOut || ''));
-
-        if (
-            isNaN(parsedCheckIn.getTime()) ||
-            isNaN(parsedCheckOut.getTime()) ||
-            parsedCheckOut <= parsedCheckIn
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: 'Please select valid check-in and check-out dates.'
-            });
-        }
-
-        const conflict = await Booking.findOne({
-            $or: [
-                { homestayId: propertyId },
-                { propertyId: propertyId }
-            ],
-            status: { $in: ['Requested', 'Confirmed'] },
-            checkInDate: { $lt: parsedCheckOut },
-            checkOutDate: { $gt: parsedCheckIn }
-        }).select('_id checkInDate checkOutDate status');
-
-        return res.json({
-            success: true,
-            available: !conflict
-        });
-    } catch (error) {
-        console.error('Availability check error:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Unable to check date availability.'
-        });
-    }
-});
-
 app.get('/api/bookings/:id', async (req, res) => {
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ success: false, message: 'Invalid Booking ID.' });
