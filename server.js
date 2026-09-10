@@ -1280,6 +1280,34 @@ app.post('/api/upload-images', (req, res) => {
     });
 });
 
+// ============================================================
+// PUBLIC HOST ID ENRICHMENT
+// ============================================================
+// Homestay records historically store host.email but not the User _id.
+// For public pages we expose only host.hostId, never the email in the URL.
+async function attachPublicHostId(listing) {
+    if (!listing || !listing.host) return listing;
+
+    // If a hostId was already stored, keep it.
+    if (listing.host.hostId || listing.host._id || listing.host.id) {
+        return listing;
+    }
+
+    const email = String(listing.host.email || '').trim().toLowerCase();
+    if (!email) return listing;
+
+    const user = await User.findOne({ email }, { _id: 1 }).lean();
+
+    if (user && user._id) {
+        listing.host = {
+            ...listing.host,
+            hostId: String(user._id)
+        };
+    }
+
+    return listing;
+}
+
 // 6. Homestay Operations[cite: 7]
 const getHomestaysHandler = async (req, res) => {
     try {
@@ -1296,7 +1324,14 @@ const getHomestaysHandler = async (req, res) => {
         if (maxPrice) queryFilter.pricePerNight = { $lte: Number(maxPrice) }; //[cite: 7]
         if (feature) queryFilter.features = { $in: [feature] }; //[cite: 7]
 
-        const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 }); //[cite: 7]
+        // Use lean() because hostId is a public response-only field for legacy
+        // records and should not require changing existing MongoDB documents.
+        const listings = await Homestay.find(queryFilter)
+            .sort({ createdAt: -1 })
+            .lean(); //[cite: 7]
+
+        await Promise.all(listings.map((listing) => attachPublicHostId(listing)));
+
         res.status(200).json({ success: true, count: listings.length, data: listings }); //[cite: 7]
     } catch (error) {
         res.status(500).json({ success: false, message: 'Server Error' }); //[cite: 7]
@@ -1324,6 +1359,11 @@ const getSingleHomestayHandler = async (req, res) => {
                 message: 'Property not found'
             });
         }
+
+        // Add the public User/ObjectId to the host object for the frontend.
+        // The lookup uses the legacy host email internally; the email is never
+        // exposed as the profile URL.
+        await attachPublicHostId(homestay);
 
         // Only create fallback avatar if the real avatar is missing.
         if (
