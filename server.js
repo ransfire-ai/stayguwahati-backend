@@ -28,7 +28,9 @@ const Review = require('./models/Review'); //[cite: 7]
 
 const app = express(); //[cite: 7]
 
-// CORS Configuration[cite: 7]
+// CORS Configuration
+// Production frontend: https://stayguwahati.in
+// Backend: https://stayguwahati-backend.onrender.com
 const allowedOrigins = [
     'https://stayguwahati.in',
     'https://www.stayguwahati.in',
@@ -38,22 +40,39 @@ const allowedOrigins = [
     'http://localhost:5173',
     'http://localhost:5500',
     'http://127.0.0.1:5500'
-]; //[cite: 7]
+];
 
-app.use(cors({
+const corsOptions = {
     origin: function (origin, callback) {
+        // Requests such as curl/server-to-server requests have no Origin header.
         if (!origin) return callback(null, true);
-        const isVercel = /\.vercel\.app$/.test(origin);
+
+        // Allow Vercel preview deployments as well as the production domain.
+        const isVercel = /^https:\/\/[a-z0-9-]+(?:--[a-z0-9-]+)?\.vercel\.app$/i.test(origin);
+
         if (allowedOrigins.includes(origin) || isVercel) {
             return callback(null, true);
-        } else {
-            return callback(new Error('Not allowed by CORS'), false);
         }
+
+        console.warn(`CORS blocked origin: ${origin}`);
+        return callback(new Error('Not allowed by CORS'), false);
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-})); //[cite: 7]
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    // Cache-Control is included because older frontend builds sent it on the
+    // availability GET request. Keeping it here also makes the API tolerant
+    // of those cached deployments while the new frontend uses a simple GET.
+    allowedHeaders: ['Accept', 'Content-Type', 'Authorization', 'Cache-Control'],
+    optionsSuccessStatus: 204,
+    maxAge: 86400
+};
+
+app.use(cors(corsOptions));
+
+// Explicitly answer browser preflight requests. This is especially useful
+// for the public availability endpoint when the frontend is hosted on a
+// different origin from the API.
+app.options(/.*/, cors(corsOptions));
 
 // --- INCREASED PAYLOAD LIMITS (100MB) ---
 app.use(express.json({ limit: '100mb' }));
@@ -494,7 +513,12 @@ app.get('/api/bookings', async (req, res) => {
 
 // Check whether a property's requested dates overlap an existing active booking.
 // Public endpoint used by the booking form before a customer submits a request.
+//
+// GET /api/bookings/availability
+// ?propertyId=<Mongo ObjectId>&checkIn=YYYY-MM-DD&checkOut=YYYY-MM-DD
 app.get('/api/bookings/availability', async (req, res) => {
+    res.set('Cache-Control', 'no-store, max-age=0');
+
     try {
         const propertyId = String(req.query.propertyId || '').trim();
         const checkIn = String(req.query.checkIn || '').trim();
@@ -504,12 +528,11 @@ app.get('/api/bookings/availability', async (req, res) => {
             return res.status(400).json({
                 success: false,
                 available: false,
+                code: 'INVALID_PROPERTY_ID',
                 message: 'A valid property ID is required.'
             });
         }
 
-        // Booking dates are calendar dates. Parse YYYY-MM-DD explicitly as UTC
-        // to avoid browser/server timezone differences changing the selected day.
         const parseDateOnly = (value) => {
             if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
             const [year, month, day] = value.split('-').map(Number);
@@ -529,30 +552,59 @@ app.get('/api/bookings/availability', async (req, res) => {
             return res.status(400).json({
                 success: false,
                 available: false,
+                code: 'INVALID_DATES',
                 message: 'Please select valid check-in and check-out dates.'
             });
         }
 
-        const property = await Homestay.findById(propertyId).select('_id isAvailable status');
+        const property = await Homestay.findById(propertyId)
+            .select('_id isAvailable status')
+            .lean();
+
         if (!property) {
             return res.status(404).json({
                 success: false,
                 available: false,
+                code: 'PROPERTY_NOT_FOUND',
                 message: 'Property not found.'
             });
         }
 
-        if (property.isAvailable === false || (property.status && String(property.status).toLowerCase() !== 'approved')) {
+        // Do not reject a property merely because older records have no status.
+        // isAvailable === false is always unavailable; an explicit non-active
+        // status is unavailable. Approved/Active/Published are bookable.
+        const normalizedStatus = property.status
+            ? String(property.status).trim().toLowerCase()
+            : '';
+        const inactiveStatuses = new Set([
+            'inactive',
+            'disabled',
+            'rejected',
+            'draft',
+            'archived',
+            'unavailable'
+        ]);
+
+        if (property.isAvailable === false || inactiveStatuses.has(normalizedStatus)) {
             return res.json({
                 success: true,
                 available: false,
+                code: 'PROPERTY_UNAVAILABLE',
                 message: 'This property is currently unavailable for booking.'
             });
         }
 
-        // Support the existing booking records regardless of whether their
-        // status was stored as Requested/Confirmed or lowercase variants.
-        const activeStatuses = ['Requested', 'Confirmed', 'requested', 'confirmed'];
+        // A booking occupies [check-in, check-out). Therefore a booking ending
+        // on the requested check-in date does NOT conflict, while any overlap
+        // does. Keep both field names for compatibility with existing records.
+        const activeStatuses = [
+            'Requested',
+            'Confirmed',
+            'requested',
+            'confirmed',
+            'Pending',
+            'pending'
+        ];
 
         const conflict = await Booking.findOne({
             $or: [
@@ -562,12 +614,15 @@ app.get('/api/bookings/availability', async (req, res) => {
             status: { $in: activeStatuses },
             checkInDate: { $lt: parsedCheckOut },
             checkOutDate: { $gt: parsedCheckIn }
-        }).select('_id checkInDate checkOutDate status');
+        })
+            .select('_id checkInDate checkOutDate status')
+            .lean();
 
         if (conflict) {
             return res.json({
                 success: true,
                 available: false,
+                code: 'DATES_UNAVAILABLE',
                 message: 'These dates are already requested or booked.'
             });
         }
@@ -575,6 +630,7 @@ app.get('/api/bookings/availability', async (req, res) => {
         return res.json({
             success: true,
             available: true,
+            code: 'DATES_AVAILABLE',
             message: 'These dates are available.'
         });
     } catch (error) {
@@ -582,6 +638,7 @@ app.get('/api/bookings/availability', async (req, res) => {
         return res.status(500).json({
             success: false,
             available: false,
+            code: 'AVAILABILITY_ERROR',
             message: 'Unable to check date availability right now.'
         });
     }
