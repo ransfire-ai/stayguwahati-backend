@@ -493,50 +493,96 @@ app.get('/api/bookings', async (req, res) => {
 }); //[cite: 7]
 
 // Check whether a property's requested dates overlap an existing active booking.
+// Public endpoint used by the booking form before a customer submits a request.
 app.get('/api/bookings/availability', async (req, res) => {
     try {
-        const { propertyId, checkIn, checkOut } = req.query;
+        const propertyId = String(req.query.propertyId || '').trim();
+        const checkIn = String(req.query.checkIn || '').trim();
+        const checkOut = String(req.query.checkOut || '').trim();
 
         if (!propertyId || !mongoose.Types.ObjectId.isValid(propertyId)) {
             return res.status(400).json({
                 success: false,
+                available: false,
                 message: 'A valid property ID is required.'
             });
         }
 
-        const parsedCheckIn = new Date(String(checkIn || ''));
-        const parsedCheckOut = new Date(String(checkOut || ''));
+        // Booking dates are calendar dates. Parse YYYY-MM-DD explicitly as UTC
+        // to avoid browser/server timezone differences changing the selected day.
+        const parseDateOnly = (value) => {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+            const [year, month, day] = value.split('-').map(Number);
+            const date = new Date(Date.UTC(year, month - 1, day));
+            if (
+                date.getUTCFullYear() !== year ||
+                date.getUTCMonth() !== month - 1 ||
+                date.getUTCDate() !== day
+            ) return null;
+            return date;
+        };
 
-        if (
-            isNaN(parsedCheckIn.getTime()) ||
-            isNaN(parsedCheckOut.getTime()) ||
-            parsedCheckOut <= parsedCheckIn
-        ) {
+        const parsedCheckIn = parseDateOnly(checkIn);
+        const parsedCheckOut = parseDateOnly(checkOut);
+
+        if (!parsedCheckIn || !parsedCheckOut || parsedCheckOut <= parsedCheckIn) {
             return res.status(400).json({
                 success: false,
+                available: false,
                 message: 'Please select valid check-in and check-out dates.'
             });
         }
 
+        const property = await Homestay.findById(propertyId).select('_id isAvailable status');
+        if (!property) {
+            return res.status(404).json({
+                success: false,
+                available: false,
+                message: 'Property not found.'
+            });
+        }
+
+        if (property.isAvailable === false || (property.status && String(property.status).toLowerCase() !== 'approved')) {
+            return res.json({
+                success: true,
+                available: false,
+                message: 'This property is currently unavailable for booking.'
+            });
+        }
+
+        // Support the existing booking records regardless of whether their
+        // status was stored as Requested/Confirmed or lowercase variants.
+        const activeStatuses = ['Requested', 'Confirmed', 'requested', 'confirmed'];
+
         const conflict = await Booking.findOne({
             $or: [
-                { homestayId: propertyId },
-                { propertyId: propertyId }
+                { homestayId: property._id },
+                { propertyId: property._id }
             ],
-            status: { $in: ['Requested', 'Confirmed'] },
+            status: { $in: activeStatuses },
             checkInDate: { $lt: parsedCheckOut },
             checkOutDate: { $gt: parsedCheckIn }
         }).select('_id checkInDate checkOutDate status');
 
+        if (conflict) {
+            return res.json({
+                success: true,
+                available: false,
+                message: 'These dates are already requested or booked.'
+            });
+        }
+
         return res.json({
             success: true,
-            available: !conflict
+            available: true,
+            message: 'These dates are available.'
         });
     } catch (error) {
         console.error('Availability check error:', error);
         return res.status(500).json({
             success: false,
-            message: 'Unable to check date availability.'
+            available: false,
+            message: 'Unable to check date availability right now.'
         });
     }
 });
