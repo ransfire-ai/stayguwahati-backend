@@ -189,46 +189,6 @@ async function uploadFileToCloudinary(filePath, originalName) {
     };
 }
 
-
-// ============================================================
-// CLOUDINARY IMAGE OPTIMIZATION
-// ============================================================
-// Existing Cloudinary images are optimized at delivery time.
-// No re-upload is required. Cloudinary selects WebP/AVIF when
-// supported and automatically optimizes image quality.
-function optimizeCloudinaryUrl(imageUrl, options = {}) {
-    if (!imageUrl || typeof imageUrl !== 'string') return imageUrl;
-    if (!imageUrl.includes('res.cloudinary.com')) return imageUrl;
-    if (imageUrl.includes('/f_auto,') || imageUrl.includes('/q_auto')) return imageUrl;
-
-    const width = Math.max(100, Math.min(Number(options.width) || 1600, 2000));
-    const quality = options.quality || 'auto:good';
-    const format = options.format || 'auto';
-
-    return imageUrl.replace(
-        '/image/upload/',
-        `/image/upload/f_${format},q_${quality},c_limit,w_${width}/`
-    );
-}
-
-function optimizeImageUrl(image, width = 1600) {
-    if (!image) return image;
-
-    if (typeof image === 'object' && image !== null) {
-        const url = image.url || image.secure_url || image.path || '';
-        if (!url) return image;
-        return optimizeCloudinaryUrl(url, { width });
-    }
-
-    return optimizeCloudinaryUrl(String(image), { width });
-}
-
-function optimizePropertyImages(images, width = 1600) {
-    if (!Array.isArray(images)) return images || [];
-    return images.map(image => optimizeImageUrl(image, width));
-}
-
-
 if (cloudinaryConfigured) {
     console.log('☁️ Cloudinary image storage is ENABLED.');
 } else {
@@ -532,51 +492,139 @@ app.get('/api/bookings', async (req, res) => {
     }
 }); //[cite: 7]
 
-// Check whether a property's requested dates overlap an existing active booking.
+// Check whether a property's requested dates are available.
+// This endpoint is a pre-booking check only. The POST /api/bookings route
+// must continue to perform the final overlap check before saving a booking.
 app.get('/api/bookings/availability', async (req, res) => {
     try {
-        const { propertyId, checkIn, checkOut } = req.query;
+        const propertyId = String(
+            req.query.propertyId ||
+            req.query.homestayId ||
+            req.query.property_id ||
+            ''
+        ).trim();
+
+        const checkInString = String(req.query.checkIn || '').trim();
+        const checkOutString = String(req.query.checkOut || '').trim();
 
         if (!propertyId || !mongoose.Types.ObjectId.isValid(propertyId)) {
             return res.status(400).json({
                 success: false,
+                available: false,
                 message: 'A valid property ID is required.'
             });
         }
 
-        const parsedCheckIn = new Date(String(checkIn || ''));
-        const parsedCheckOut = new Date(String(checkOut || ''));
+        const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+        if (!datePattern.test(checkInString) || !datePattern.test(checkOutString)) {
+            return res.status(400).json({
+                success: false,
+                available: false,
+                message: 'Dates must be in YYYY-MM-DD format.'
+            });
+        }
+
+        // Use UTC midnight because the browser sends date-only values.
+        // This prevents timezone shifts from changing the selected day.
+        const parsedCheckIn = new Date(`${checkInString}T00:00:00.000Z`);
+        const parsedCheckOut = new Date(`${checkOutString}T00:00:00.000Z`);
 
         if (
-            isNaN(parsedCheckIn.getTime()) ||
-            isNaN(parsedCheckOut.getTime()) ||
+            Number.isNaN(parsedCheckIn.getTime()) ||
+            Number.isNaN(parsedCheckOut.getTime()) ||
             parsedCheckOut <= parsedCheckIn
         ) {
             return res.status(400).json({
                 success: false,
-                message: 'Please select valid check-in and check-out dates.'
+                available: false,
+                message: 'Check-out must be after check-in.'
             });
         }
 
+        const todayUtc = new Date();
+        todayUtc.setUTCHours(0, 0, 0, 0);
+
+        if (parsedCheckIn < todayUtc) {
+            return res.status(400).json({
+                success: false,
+                available: false,
+                message: 'Check-in date cannot be in the past.'
+            });
+        }
+
+        const property = await Homestay.findById(propertyId)
+            .select('_id title status isAvailable')
+            .lean();
+
+        if (!property) {
+            return res.status(404).json({
+                success: false,
+                available: false,
+                message: 'Property not found.'
+            });
+        }
+
+        if (property.isAvailable === false) {
+            return res.status(200).json({
+                success: true,
+                available: false,
+                reason: 'PROPERTY_UNAVAILABLE',
+                message: 'This property is currently unavailable.',
+                propertyId: String(property._id)
+            });
+        }
+
+        if (property.status && property.status !== 'approved') {
+            return res.status(200).json({
+                success: true,
+                available: false,
+                reason: 'PROPERTY_UNAVAILABLE',
+                message: 'This property is not currently available for booking.',
+                propertyId: String(property._id)
+            });
+        }
+
+        // Overlap rule:
+        // existing check-in  < requested check-out
+        // AND existing check-out > requested check-in
+        //
+        // This allows same-day turnover: an existing checkout on 15th
+        // does not block a new check-in on the 15th.
         const conflict = await Booking.findOne({
             $or: [
-                { homestayId: propertyId },
-                { propertyId: propertyId }
+                { homestayId: property._id },
+                { propertyId: property._id }
             ],
             status: { $in: ['Requested', 'Confirmed'] },
             checkInDate: { $lt: parsedCheckOut },
             checkOutDate: { $gt: parsedCheckIn }
-        }).select('_id checkInDate checkOutDate status');
+        })
+            .select('_id checkInDate checkOutDate status')
+            .lean();
 
-        return res.json({
+        if (conflict) {
+            return res.status(200).json({
+                success: true,
+                available: false,
+                reason: 'DATES_UNAVAILABLE',
+                message: 'These dates are already requested or booked. Please choose different dates.',
+                propertyId: String(property._id)
+            });
+        }
+
+        return res.status(200).json({
             success: true,
-            available: !conflict
+            available: true,
+            reason: 'AVAILABLE',
+            message: 'These dates are currently available.',
+            propertyId: String(property._id)
         });
     } catch (error) {
         console.error('Availability check error:', error);
         return res.status(500).json({
             success: false,
-            message: 'Unable to check date availability.'
+            available: false,
+            message: 'Unable to check date availability right now. Please try again.'
         });
     }
 });
@@ -1313,8 +1361,7 @@ app.post('/api/upload-images', (req, res) => {
 
                         if (cloudResult?.url) {
                             results.push({
-                                url: optimizeCloudinaryUrl(cloudResult.url, { width: 1600 }),
-                                originalUrl: cloudResult.url,
+                                url: cloudResult.url,
                                 publicId: cloudResult.publicId
                             });
 
@@ -1386,23 +1433,8 @@ const getHomestaysHandler = async (req, res) => {
         if (maxPrice) queryFilter.pricePerNight = { $lte: Number(maxPrice) }; //[cite: 7]
         if (feature) queryFilter.features = { $in: [feature] }; //[cite: 7]
 
-        const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 }).lean(); //[cite: 7]
-
-        const optimizedListings = listings.map(listing => ({
-            ...listing,
-            images: optimizePropertyImages(listing.images, 800),
-            photos: optimizePropertyImages(listing.photos, 800),
-            imageUrl: optimizeImageUrl(listing.imageUrl, 800),
-            image: optimizeImageUrl(listing.image, 800),
-            host: listing.host
-                ? {
-                    ...listing.host,
-                    avatar: optimizeImageUrl(listing.host.avatar, 400)
-                }
-                : listing.host
-        }));
-
-        res.status(200).json({ success: true, count: optimizedListings.length, data: optimizedListings }); //[cite: 7]
+        const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 }); //[cite: 7]
+        res.status(200).json({ success: true, count: listings.length, data: listings }); //[cite: 7]
     } catch (error) {
         res.status(500).json({ success: false, message: 'Server Error' }); //[cite: 7]
     }
@@ -1428,17 +1460,6 @@ const getSingleHomestayHandler = async (req, res) => {
                 success: false,
                 message: 'Property not found'
             });
-        }
-
-        // Optimize existing Cloudinary images on delivery.
-        // The database continues to keep the original URLs.
-        homestay.images = optimizePropertyImages(homestay.images, 1600);
-        homestay.photos = optimizePropertyImages(homestay.photos, 1600);
-        homestay.imageUrl = optimizeImageUrl(homestay.imageUrl, 1600);
-        homestay.image = optimizeImageUrl(homestay.image, 1600);
-
-        if (homestay.host) {
-            homestay.host.avatar = optimizeImageUrl(homestay.host.avatar, 400);
         }
 
         // Only create fallback avatar if the real avatar is missing.
