@@ -25,7 +25,6 @@ const User = require('./models/User'); //[cite: 7]
 const Booking = require('./models/Booking'); //[cite: 7]
 const Message = require('./models/message'); //[cite: 7]
 const Review = require('./models/Review'); //[cite: 7]
-const Referral = require('./models/Referral');
 
 const app = express(); //[cite: 7]
 
@@ -190,6 +189,46 @@ async function uploadFileToCloudinary(filePath, originalName) {
     };
 }
 
+
+// ============================================================
+// CLOUDINARY IMAGE OPTIMIZATION
+// ============================================================
+// Existing Cloudinary images are optimized at delivery time.
+// No re-upload is required. Cloudinary selects WebP/AVIF when
+// supported and automatically optimizes image quality.
+function optimizeCloudinaryUrl(imageUrl, options = {}) {
+    if (!imageUrl || typeof imageUrl !== 'string') return imageUrl;
+    if (!imageUrl.includes('res.cloudinary.com')) return imageUrl;
+    if (imageUrl.includes('/f_auto,') || imageUrl.includes('/q_auto')) return imageUrl;
+
+    const width = Math.max(100, Math.min(Number(options.width) || 1600, 2000));
+    const quality = options.quality || 'auto:good';
+    const format = options.format || 'auto';
+
+    return imageUrl.replace(
+        '/image/upload/',
+        `/image/upload/f_${format},q_${quality},c_limit,w_${width}/`
+    );
+}
+
+function optimizeImageUrl(image, width = 1600) {
+    if (!image) return image;
+
+    if (typeof image === 'object' && image !== null) {
+        const url = image.url || image.secure_url || image.path || '';
+        if (!url) return image;
+        return optimizeCloudinaryUrl(url, { width });
+    }
+
+    return optimizeCloudinaryUrl(String(image), { width });
+}
+
+function optimizePropertyImages(images, width = 1600) {
+    if (!Array.isArray(images)) return images || [];
+    return images.map(image => optimizeImageUrl(image, width));
+}
+
+
 if (cloudinaryConfigured) {
     console.log('☁️ Cloudinary image storage is ENABLED.');
 } else {
@@ -302,169 +341,6 @@ const authorizeAdmin = (req, res, next) => {
     return res.status(403).json({ success: false, message: 'Access denied. Admin rights required.' }); //[cite: 7]
 }; //[cite: 7]
 
-
-// ============================================================
-// REFERRALS
-// ============================================================
-const REFERRAL_REWARD = Number(process.env.REFERRAL_REWARD || 1000);
-const REFERRAL_EXPIRY_DAYS = Number(process.env.REFERRAL_EXPIRY_DAYS || 90);
-
-function createReferralCode() {
-    return crypto.randomBytes(12).toString('hex');
-}
-
-function optionalAuthenticateToken(req, _res, next) {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    if (!token) return next();
-
-    const jwtSecret = process.env.JWT_SECRET || 'stayguwahati_jwt_super_secret_key_2026';
-    try {
-        const decoded = jwt.verify(token, jwtSecret);
-        req.user = decoded;
-    } catch (_) {
-        // A referral can be submitted by a guest. Invalid optional auth is ignored.
-    }
-    return next();
-}
-
-function escapeHtml(value) {
-    return String(value || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
-
-async function sendReferralInvitation(referral) {
-    if (!resend || !referral?.hostEmail) return false;
-
-    const clientUrl = (process.env.CLIENT_URL || 'https://stayguwahati.in').replace(/\/$/, '');
-    const registrationUrl = `${clientUrl}/register?ref=${encodeURIComponent(referral.referralCode)}`;
-    const referrerName = escapeHtml(referral.referrerName);
-    const hostName = escapeHtml(referral.hostName);
-    const reward = Number(referral.rewardAmount || REFERRAL_REWARD).toLocaleString('en-IN');
-
-    await resend.emails.send({
-        from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
-        to: referral.hostEmail,
-        subject: `${referral.referrerName} invited you to host on StayGuwahati`,
-        html: `
-          <div style="font-family:Arial,sans-serif;background:#f5faf8;padding:28px;color:#123f3b">
-            <div style="max-width:620px;margin:auto;background:#fff;border:1px solid #dce9e4;border-radius:18px;overflow:hidden">
-              <div style="background:#123f3b;color:#fff;padding:24px 28px">
-                <div style="font-size:21px;font-weight:800">StayGuwahati</div>
-                <div style="margin-top:5px;font-size:12px;opacity:.8">Trusted local stays. Meaningful stays.</div>
-              </div>
-              <div style="padding:30px">
-                <p style="margin:0 0 8px;color:#16867a;font-size:12px;font-weight:800;letter-spacing:1px">YOU'VE BEEN INVITED</p>
-                <h2 style="margin:0 0 14px;font-size:26px;color:#092e39">Hi ${hostName},</h2>
-                <p style="font-size:15px;line-height:1.7;color:#526d68">
-                  ${referrerName} thinks your property would be a great fit for StayGuwahati.
-                </p>
-                <div style="background:#eaf8f3;border-radius:14px;padding:18px;margin:22px 0">
-                  <strong style="font-size:18px;color:#123f3b">Refer & earn together</strong>
-                  <p style="margin:7px 0 0;color:#5d7772;font-size:14px;line-height:1.6">
-                    When you complete your first eligible booking, the referral programme can award ₹${reward} to you and ₹${reward} to your referrer.
-                  </p>
-                </div>
-                <div style="text-align:center;margin:28px 0">
-                  <a href="${registrationUrl}" style="display:inline-block;background:#087c72;color:#fff;text-decoration:none;padding:14px 24px;border-radius:10px;font-weight:800">
-                    Join StayGuwahati
-                  </a>
-                </div>
-                <p style="font-size:12px;color:#8aa09b;line-height:1.6">
-                  This invitation is linked to your referral record. Please use the button above so your registration is correctly attributed.
-                </p>
-              </div>
-            </div>
-          </div>
-        `
-    });
-
-    return true;
-}
-
-async function processReferralRewardForBooking(booking) {
-    try {
-        if (!booking || String(booking.status || '').toLowerCase() !== 'confirmed') return null;
-
-        const propertyId = booking.propertyId || booking.homestayId;
-        if (!propertyId) return null;
-
-        const property = await Homestay.findById(propertyId).lean();
-        if (!property) return null;
-
-        const hostEmail = String(
-            property.ownerEmail || property.host?.email || booking.hostEmail || ''
-        ).trim().toLowerCase();
-        if (!hostEmail) return null;
-
-        const hostUser = await User.findOne({ email: hostEmail }).select('_id name email').lean();
-        if (!hostUser?._id) return null;
-
-        // A referral is rewarded only once, for the first confirmed booking
-        // attached to the referred host. This atomic update makes duplicate
-        // webhook/status calls safe.
-        const referral = await Referral.findOneAndUpdate(
-            {
-                hostUserId: hostUser._id,
-                status: { $in: ['registered', 'property_listed', 'eligible'] },
-                firstEligibleBookingId: null,
-                $or: [
-                    { expiresAt: null },
-                    { expiresAt: { $gt: new Date() } }
-                ]
-            },
-            {
-                $set: {
-                    status: 'completed',
-                    propertyId,
-                    firstEligibleBookingId: booking._id,
-                    rewardAmount: REFERRAL_REWARD,
-                    referrerRewardStatus: 'earned',
-                    hostRewardStatus: 'earned',
-                    rewardEarnedAt: new Date()
-                }
-            },
-            { new: true, sort: { createdAt: 1 } }
-        );
-
-        if (!referral) return null;
-
-        console.log(`[REFERRAL] Reward earned for referral ${referral._id} from booking ${booking._id}`);
-
-        if (resend) {
-            const clientUrl = (process.env.CLIENT_URL || 'https://stayguwahati.in').replace(/\/$/, '');
-            const reward = Number(referral.rewardAmount || REFERRAL_REWARD).toLocaleString('en-IN');
-            const emailJobs = [];
-
-            emailJobs.push(resend.emails.send({
-                from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
-                to: referral.referrerEmail,
-                subject: `₹${reward} referral reward earned on StayGuwahati`,
-                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#123f3b"><h2>Referral reward earned 🎉</h2><p>Your referred host <strong>${escapeHtml(referral.hostName)}</strong> has completed their first eligible booking.</p><p>Your current referral reward status is <strong>earned</strong> for ₹${reward}.</p><p><a href="${clientUrl}/dashboard">Open StayGuwahati</a></p></div>`
-            }).catch(e => console.error('[REFERRAL] Referrer reward email error:', e.message)));
-
-            emailJobs.push(resend.emails.send({
-                from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
-                to: referral.hostEmail,
-                subject: `Your StayGuwahati host reward is earned`,
-                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#123f3b"><h2>Welcome to the host community 🎉</h2><p>Your first eligible booking has been recorded.</p><p>Your current referral reward status is <strong>earned</strong> for ₹${reward}.</p><p><a href="${clientUrl}/dashboard">Open StayGuwahati</a></p></div>`
-            }).catch(e => console.error('[REFERRAL] Host reward email error:', e.message)));
-
-            await Promise.all(emailJobs);
-        }
-
-        return referral;
-    } catch (error) {
-        // Referral processing must never make a valid booking/status update fail.
-        console.error('[REFERRAL] Reward processing error:', error.message);
-        return null;
-    }
-}
-
 // Basic health/status endpoint
 app.get('/api/health', (req, res) => {
     res.status(200).json({
@@ -544,7 +420,7 @@ app.post('/api/auth/login', async (req, res) => {
 
 // 3. Authentication: Register[cite: 7]
 app.post('/api/auth/register', async (req, res) => {
-    const { name, email, password, referralCode, ref } = req.body; //[cite: 7]
+    const { name, email, password } = req.body; //[cite: 7]
     try {
         if (!email || !password || !name) {
             return res.status(400).json({ success: false, message: "Name, email, and password are required." }); //[cite: 7]
@@ -556,36 +432,8 @@ app.post('/api/auth/register', async (req, res) => {
         const salt = await bcrypt.genSalt(10); //[cite: 7]
         const passwordHash = await bcrypt.hash(password, salt); //[cite: 7]
 
-        const normalizedEmail = email.toLowerCase();
-        const newUser = await User.create({ name, email: normalizedEmail, passwordHash });
-
-        // Attribute a referred host at the moment of registration.
-        const registrationReferralCode = String(referralCode || ref || '').trim();
-        if (registrationReferralCode) {
-            const referral = await Referral.findOne({
-                referralCode: registrationReferralCode,
-                hostEmail: normalizedEmail,
-                status: { $in: ['pending', 'invited'] },
-                $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }]
-            });
-
-            if (referral) {
-                referral.hostUserId = newUser._id;
-                referral.status = 'registered';
-                referral.registeredAt = new Date();
-                await referral.save();
-                console.log(`[REFERRAL] Host ${newUser._id} registered through referral ${referral._id}`);
-            }
-        }
-
-        res.status(201).json({
-            success: true,
-            message: registrationReferralCode
-                ? 'Registration successful! Your referral has been recorded.'
-                : 'Registration successful!',
-            user: { id: newUser._id, name: newUser.name, email: newUser.email, role: newUser.role },
-            referralTracked: Boolean(registrationReferralCode)
-        });
+        await User.create({ name, email: email.toLowerCase(), passwordHash }); //[cite: 7]
+        res.status(201).json({ success: true, message: "Registration successful!" }); //[cite: 7]
     } catch (error) {
         console.error("Register error:", error); //[cite: 7]
         res.status(500).json({ success: false, message: "Server error." }); //[cite: 7]
@@ -660,146 +508,6 @@ app.post('/api/auth/reset-password', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error during password reset." }); //[cite: 7]
     }
 }); //[cite: 7]
-
-
-// ============================================================
-// REFERRAL API
-// ============================================================
-
-// Create a referral and email the invitation to the referred host.
-app.post('/api/referrals', optionalAuthenticateToken, async (req, res) => {
-    try {
-        const referrerName = String(req.user?.userId ? (req.user.name || '') : (req.body.referrerName || '')).trim();
-        const referrerEmail = String(req.user?.userId ? (req.user.email || '') : (req.body.referrerEmail || '')).trim().toLowerCase();
-        const hostName = String(req.body.hostName || '').trim();
-        const hostPhone = String(req.body.hostPhone || '').trim();
-        const hostEmail = String(req.body.hostEmail || '').trim().toLowerCase();
-        const message = String(req.body.message || '').trim().slice(0, 2000);
-
-        if (!referrerName || !referrerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(referrerEmail)) {
-            return res.status(400).json({ success: false, message: 'Valid referrer name and email are required.' });
-        }
-        if (!hostName || !hostPhone || !hostEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(hostEmail)) {
-            return res.status(400).json({ success: false, message: 'Valid host name, phone and email are required.' });
-        }
-        if (referrerEmail === hostEmail) {
-            return res.status(400).json({ success: false, message: 'You cannot refer yourself.' });
-        }
-
-        const existingUser = await User.findOne({ email: hostEmail }).select('_id name email').lean();
-        if (existingUser) {
-            return res.status(409).json({ success: false, message: 'This host already has a StayGuwahati account.' });
-        }
-
-        const existingReferral = await Referral.findOne({
-            hostEmail,
-            status: { $nin: ['rejected', 'expired'] }
-        }).sort({ createdAt: -1 });
-
-        if (existingReferral) {
-            return res.status(409).json({
-                success: false,
-                message: 'This host has already been referred.',
-                referralId: existingReferral._id
-            });
-        }
-
-        const referral = await Referral.create({
-            referralCode: createReferralCode(),
-            referrerId: req.user?.userId || null,
-            referrerName,
-            referrerEmail,
-            hostName,
-            hostPhone,
-            hostEmail,
-            message,
-            status: 'pending',
-            rewardAmount: REFERRAL_REWARD,
-            expiresAt: new Date(Date.now() + REFERRAL_EXPIRY_DAYS * 24 * 60 * 60 * 1000)
-        });
-
-        let emailSent = false;
-        if (resend) {
-            try {
-                emailSent = await sendReferralInvitation(referral);
-                if (emailSent) {
-                    referral.status = 'invited';
-                    referral.invitedAt = new Date();
-                    await referral.save();
-                }
-            } catch (emailError) {
-                console.error('[REFERRAL] Invitation email error:', emailError.message);
-            }
-        }
-
-        return res.status(201).json({
-            success: true,
-            message: emailSent
-                ? 'Referral saved and invitation sent successfully.'
-                : 'Referral saved. Email delivery is not configured yet.',
-            data: {
-                id: referral._id,
-                referralCode: referral.referralCode,
-                status: referral.status,
-                expiresAt: referral.expiresAt,
-                emailSent
-            }
-        });
-    } catch (error) {
-        console.error('[REFERRAL] Create error:', error);
-        if (error.code === 11000) {
-            return res.status(409).json({ success: false, message: 'A referral with this information already exists.' });
-        }
-        return res.status(500).json({ success: false, message: 'Unable to create referral.' });
-    }
-});
-
-// Validate a referral code before registration.
-app.get('/api/referrals/:code', async (req, res) => {
-    try {
-        const code = String(req.params.code || '').trim();
-        const referral = await Referral.findOne({
-            referralCode: code,
-            status: { $in: ['pending', 'invited'] },
-            $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }]
-        }).select('_id referralCode hostName hostEmail status expiresAt rewardAmount').lean();
-
-        if (!referral) {
-            return res.status(404).json({ success: false, message: 'Referral invitation is invalid or expired.' });
-        }
-
-        return res.json({
-            success: true,
-            data: {
-                id: referral._id,
-                referralCode: referral.referralCode,
-                hostName: referral.hostName,
-                status: referral.status,
-                expiresAt: referral.expiresAt,
-                rewardAmount: referral.rewardAmount
-            }
-        });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: 'Unable to validate referral.' });
-    }
-});
-
-// Get referrals for the logged-in user. Email is never required from the client.
-app.get('/api/referrals/my', authenticateToken, async (req, res) => {
-    try {
-        const referrals = await Referral.find({
-            $or: [
-                ...(req.user?.userId && mongoose.Types.ObjectId.isValid(req.user.userId) ? [{ referrerId: req.user.userId }] : []),
-                ...(req.user?.email ? [{ referrerEmail: String(req.user.email).toLowerCase() }] : [])
-            ]
-        }).sort({ createdAt: -1 }).lean();
-
-        return res.json({ success: true, count: referrals.length, data: referrals });
-    } catch (error) {
-        console.error('[REFERRAL] My referrals error:', error);
-        return res.status(500).json({ success: false, message: 'Unable to load referrals.' });
-    }
-});
 
 // 4. Booking Routes[cite: 7]
 app.get('/api/bookings', async (req, res) => {
@@ -1060,12 +768,6 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
 
         booking.status = newStatus;
         await booking.save();
-
-        // A confirmed booking is the first eligible booking event for referral rewards.
-        // Reward processing is idempotent and cannot invalidate a valid booking update.
-        if (newStatus === 'Confirmed') {
-            await processReferralRewardForBooking(booking);
-        }
 
         if (resend && booking.email) {
             const approved = newStatus === 'Confirmed';
@@ -1611,7 +1313,8 @@ app.post('/api/upload-images', (req, res) => {
 
                         if (cloudResult?.url) {
                             results.push({
-                                url: cloudResult.url,
+                                url: optimizeCloudinaryUrl(cloudResult.url, { width: 1600 }),
+                                originalUrl: cloudResult.url,
                                 publicId: cloudResult.publicId
                             });
 
@@ -1683,8 +1386,23 @@ const getHomestaysHandler = async (req, res) => {
         if (maxPrice) queryFilter.pricePerNight = { $lte: Number(maxPrice) }; //[cite: 7]
         if (feature) queryFilter.features = { $in: [feature] }; //[cite: 7]
 
-        const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 }); //[cite: 7]
-        res.status(200).json({ success: true, count: listings.length, data: listings }); //[cite: 7]
+        const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 }).lean(); //[cite: 7]
+
+        const optimizedListings = listings.map(listing => ({
+            ...listing,
+            images: optimizePropertyImages(listing.images, 800),
+            photos: optimizePropertyImages(listing.photos, 800),
+            imageUrl: optimizeImageUrl(listing.imageUrl, 800),
+            image: optimizeImageUrl(listing.image, 800),
+            host: listing.host
+                ? {
+                    ...listing.host,
+                    avatar: optimizeImageUrl(listing.host.avatar, 400)
+                }
+                : listing.host
+        }));
+
+        res.status(200).json({ success: true, count: optimizedListings.length, data: optimizedListings }); //[cite: 7]
     } catch (error) {
         res.status(500).json({ success: false, message: 'Server Error' }); //[cite: 7]
     }
@@ -1710,6 +1428,17 @@ const getSingleHomestayHandler = async (req, res) => {
                 success: false,
                 message: 'Property not found'
             });
+        }
+
+        // Optimize existing Cloudinary images on delivery.
+        // The database continues to keep the original URLs.
+        homestay.images = optimizePropertyImages(homestay.images, 1600);
+        homestay.photos = optimizePropertyImages(homestay.photos, 1600);
+        homestay.imageUrl = optimizeImageUrl(homestay.imageUrl, 1600);
+        homestay.image = optimizeImageUrl(homestay.image, 1600);
+
+        if (homestay.host) {
+            homestay.host.avatar = optimizeImageUrl(homestay.host.avatar, 400);
         }
 
         // Only create fallback avatar if the real avatar is missing.
