@@ -492,139 +492,51 @@ app.get('/api/bookings', async (req, res) => {
     }
 }); //[cite: 7]
 
-// Check whether a property's requested dates are available.
-// This endpoint is a pre-booking check only. The POST /api/bookings route
-// must continue to perform the final overlap check before saving a booking.
+// Check whether a property's requested dates overlap an existing active booking.
 app.get('/api/bookings/availability', async (req, res) => {
     try {
-        const propertyId = String(
-            req.query.propertyId ||
-            req.query.homestayId ||
-            req.query.property_id ||
-            ''
-        ).trim();
-
-        const checkInString = String(req.query.checkIn || '').trim();
-        const checkOutString = String(req.query.checkOut || '').trim();
+        const { propertyId, checkIn, checkOut } = req.query;
 
         if (!propertyId || !mongoose.Types.ObjectId.isValid(propertyId)) {
             return res.status(400).json({
                 success: false,
-                available: false,
                 message: 'A valid property ID is required.'
             });
         }
 
-        const datePattern = /^\d{4}-\d{2}-\d{2}$/;
-        if (!datePattern.test(checkInString) || !datePattern.test(checkOutString)) {
-            return res.status(400).json({
-                success: false,
-                available: false,
-                message: 'Dates must be in YYYY-MM-DD format.'
-            });
-        }
-
-        // Use UTC midnight because the browser sends date-only values.
-        // This prevents timezone shifts from changing the selected day.
-        const parsedCheckIn = new Date(`${checkInString}T00:00:00.000Z`);
-        const parsedCheckOut = new Date(`${checkOutString}T00:00:00.000Z`);
+        const parsedCheckIn = new Date(String(checkIn || ''));
+        const parsedCheckOut = new Date(String(checkOut || ''));
 
         if (
-            Number.isNaN(parsedCheckIn.getTime()) ||
-            Number.isNaN(parsedCheckOut.getTime()) ||
+            isNaN(parsedCheckIn.getTime()) ||
+            isNaN(parsedCheckOut.getTime()) ||
             parsedCheckOut <= parsedCheckIn
         ) {
             return res.status(400).json({
                 success: false,
-                available: false,
-                message: 'Check-out must be after check-in.'
+                message: 'Please select valid check-in and check-out dates.'
             });
         }
 
-        const todayUtc = new Date();
-        todayUtc.setUTCHours(0, 0, 0, 0);
-
-        if (parsedCheckIn < todayUtc) {
-            return res.status(400).json({
-                success: false,
-                available: false,
-                message: 'Check-in date cannot be in the past.'
-            });
-        }
-
-        const property = await Homestay.findById(propertyId)
-            .select('_id title status isAvailable')
-            .lean();
-
-        if (!property) {
-            return res.status(404).json({
-                success: false,
-                available: false,
-                message: 'Property not found.'
-            });
-        }
-
-        if (property.isAvailable === false) {
-            return res.status(200).json({
-                success: true,
-                available: false,
-                reason: 'PROPERTY_UNAVAILABLE',
-                message: 'This property is currently unavailable.',
-                propertyId: String(property._id)
-            });
-        }
-
-        if (property.status && property.status !== 'approved') {
-            return res.status(200).json({
-                success: true,
-                available: false,
-                reason: 'PROPERTY_UNAVAILABLE',
-                message: 'This property is not currently available for booking.',
-                propertyId: String(property._id)
-            });
-        }
-
-        // Overlap rule:
-        // existing check-in  < requested check-out
-        // AND existing check-out > requested check-in
-        //
-        // This allows same-day turnover: an existing checkout on 15th
-        // does not block a new check-in on the 15th.
         const conflict = await Booking.findOne({
             $or: [
-                { homestayId: property._id },
-                { propertyId: property._id }
+                { homestayId: propertyId },
+                { propertyId: propertyId }
             ],
             status: { $in: ['Requested', 'Confirmed'] },
             checkInDate: { $lt: parsedCheckOut },
             checkOutDate: { $gt: parsedCheckIn }
-        })
-            .select('_id checkInDate checkOutDate status')
-            .lean();
+        }).select('_id checkInDate checkOutDate status');
 
-        if (conflict) {
-            return res.status(200).json({
-                success: true,
-                available: false,
-                reason: 'DATES_UNAVAILABLE',
-                message: 'These dates are already requested or booked. Please choose different dates.',
-                propertyId: String(property._id)
-            });
-        }
-
-        return res.status(200).json({
+        return res.json({
             success: true,
-            available: true,
-            reason: 'AVAILABLE',
-            message: 'These dates are currently available.',
-            propertyId: String(property._id)
+            available: !conflict
         });
     } catch (error) {
         console.error('Availability check error:', error);
         return res.status(500).json({
             success: false,
-            available: false,
-            message: 'Unable to check date availability right now. Please try again.'
+            message: 'Unable to check date availability.'
         });
     }
 });
