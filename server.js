@@ -28,9 +28,7 @@ const Review = require('./models/Review'); //[cite: 7]
 
 const app = express(); //[cite: 7]
 
-// CORS Configuration
-// Production frontend: https://stayguwahati.in
-// Backend: https://stayguwahati-backend.onrender.com
+// CORS Configuration[cite: 7]
 const allowedOrigins = [
     'https://stayguwahati.in',
     'https://www.stayguwahati.in',
@@ -40,39 +38,22 @@ const allowedOrigins = [
     'http://localhost:5173',
     'http://localhost:5500',
     'http://127.0.0.1:5500'
-];
+]; //[cite: 7]
 
-const corsOptions = {
+app.use(cors({
     origin: function (origin, callback) {
-        // Requests such as curl/server-to-server requests have no Origin header.
         if (!origin) return callback(null, true);
-
-        // Allow Vercel preview deployments as well as the production domain.
-        const isVercel = /^https:\/\/[a-z0-9-]+(?:--[a-z0-9-]+)?\.vercel\.app$/i.test(origin);
-
+        const isVercel = /\.vercel\.app$/.test(origin);
         if (allowedOrigins.includes(origin) || isVercel) {
             return callback(null, true);
+        } else {
+            return callback(new Error('Not allowed by CORS'), false);
         }
-
-        console.warn(`CORS blocked origin: ${origin}`);
-        return callback(new Error('Not allowed by CORS'), false);
     },
     credentials: true,
-    methods: ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    // Cache-Control is included because older frontend builds sent it on the
-    // availability GET request. Keeping it here also makes the API tolerant
-    // of those cached deployments while the new frontend uses a simple GET.
-    allowedHeaders: ['Accept', 'Content-Type', 'Authorization', 'Cache-Control'],
-    optionsSuccessStatus: 204,
-    maxAge: 86400
-};
-
-app.use(cors(corsOptions));
-
-// Explicitly answer browser preflight requests. This is especially useful
-// for the public availability endpoint when the frontend is hosted on a
-// different origin from the API.
-app.options(/.*/, cors(corsOptions));
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+})); //[cite: 7]
 
 // --- INCREASED PAYLOAD LIMITS (100MB) ---
 app.use(express.json({ limit: '100mb' }));
@@ -207,6 +188,46 @@ async function uploadFileToCloudinary(filePath, originalName) {
         publicId: result.public_id
     };
 }
+
+
+// ============================================================
+// CLOUDINARY IMAGE OPTIMIZATION
+// ============================================================
+// Existing Cloudinary images are optimized at delivery time.
+// No re-upload is required. Cloudinary selects WebP/AVIF when
+// supported and automatically optimizes image quality.
+function optimizeCloudinaryUrl(imageUrl, options = {}) {
+    if (!imageUrl || typeof imageUrl !== 'string') return imageUrl;
+    if (!imageUrl.includes('res.cloudinary.com')) return imageUrl;
+    if (imageUrl.includes('/f_auto,') || imageUrl.includes('/q_auto')) return imageUrl;
+
+    const width = Math.max(100, Math.min(Number(options.width) || 1600, 2000));
+    const quality = options.quality || 'auto:good';
+    const format = options.format || 'auto';
+
+    return imageUrl.replace(
+        '/image/upload/',
+        `/image/upload/f_${format},q_${quality},c_limit,w_${width}/`
+    );
+}
+
+function optimizeImageUrl(image, width = 1600) {
+    if (!image) return image;
+
+    if (typeof image === 'object' && image !== null) {
+        const url = image.url || image.secure_url || image.path || '';
+        if (!url) return image;
+        return optimizeCloudinaryUrl(url, { width });
+    }
+
+    return optimizeCloudinaryUrl(String(image), { width });
+}
+
+function optimizePropertyImages(images, width = 1600) {
+    if (!Array.isArray(images)) return images || [];
+    return images.map(image => optimizeImageUrl(image, width));
+}
+
 
 if (cloudinaryConfigured) {
     console.log('☁️ Cloudinary image storage is ENABLED.');
@@ -512,134 +533,50 @@ app.get('/api/bookings', async (req, res) => {
 }); //[cite: 7]
 
 // Check whether a property's requested dates overlap an existing active booking.
-// Public endpoint used by the booking form before a customer submits a request.
-//
-// GET /api/bookings/availability
-// ?propertyId=<Mongo ObjectId>&checkIn=YYYY-MM-DD&checkOut=YYYY-MM-DD
 app.get('/api/bookings/availability', async (req, res) => {
-    res.set('Cache-Control', 'no-store, max-age=0');
-
     try {
-        const propertyId = String(req.query.propertyId || '').trim();
-        const checkIn = String(req.query.checkIn || '').trim();
-        const checkOut = String(req.query.checkOut || '').trim();
+        const { propertyId, checkIn, checkOut } = req.query;
 
         if (!propertyId || !mongoose.Types.ObjectId.isValid(propertyId)) {
             return res.status(400).json({
                 success: false,
-                available: false,
-                code: 'INVALID_PROPERTY_ID',
                 message: 'A valid property ID is required.'
             });
         }
 
-        const parseDateOnly = (value) => {
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-            const [year, month, day] = value.split('-').map(Number);
-            const date = new Date(Date.UTC(year, month - 1, day));
-            if (
-                date.getUTCFullYear() !== year ||
-                date.getUTCMonth() !== month - 1 ||
-                date.getUTCDate() !== day
-            ) return null;
-            return date;
-        };
+        const parsedCheckIn = new Date(String(checkIn || ''));
+        const parsedCheckOut = new Date(String(checkOut || ''));
 
-        const parsedCheckIn = parseDateOnly(checkIn);
-        const parsedCheckOut = parseDateOnly(checkOut);
-
-        if (!parsedCheckIn || !parsedCheckOut || parsedCheckOut <= parsedCheckIn) {
+        if (
+            isNaN(parsedCheckIn.getTime()) ||
+            isNaN(parsedCheckOut.getTime()) ||
+            parsedCheckOut <= parsedCheckIn
+        ) {
             return res.status(400).json({
                 success: false,
-                available: false,
-                code: 'INVALID_DATES',
                 message: 'Please select valid check-in and check-out dates.'
             });
         }
 
-        const property = await Homestay.findById(propertyId)
-            .select('_id isAvailable status')
-            .lean();
-
-        if (!property) {
-            return res.status(404).json({
-                success: false,
-                available: false,
-                code: 'PROPERTY_NOT_FOUND',
-                message: 'Property not found.'
-            });
-        }
-
-        // Do not reject a property merely because older records have no status.
-        // isAvailable === false is always unavailable; an explicit non-active
-        // status is unavailable. Approved/Active/Published are bookable.
-        const normalizedStatus = property.status
-            ? String(property.status).trim().toLowerCase()
-            : '';
-        const inactiveStatuses = new Set([
-            'inactive',
-            'disabled',
-            'rejected',
-            'draft',
-            'archived',
-            'unavailable'
-        ]);
-
-        if (property.isAvailable === false || inactiveStatuses.has(normalizedStatus)) {
-            return res.json({
-                success: true,
-                available: false,
-                code: 'PROPERTY_UNAVAILABLE',
-                message: 'This property is currently unavailable for booking.'
-            });
-        }
-
-        // A booking occupies [check-in, check-out). Therefore a booking ending
-        // on the requested check-in date does NOT conflict, while any overlap
-        // does. Keep both field names for compatibility with existing records.
-        const activeStatuses = [
-            'Requested',
-            'Confirmed',
-            'requested',
-            'confirmed',
-            'Pending',
-            'pending'
-        ];
-
         const conflict = await Booking.findOne({
             $or: [
-                { homestayId: property._id },
-                { propertyId: property._id }
+                { homestayId: propertyId },
+                { propertyId: propertyId }
             ],
-            status: { $in: activeStatuses },
+            status: { $in: ['Requested', 'Confirmed'] },
             checkInDate: { $lt: parsedCheckOut },
             checkOutDate: { $gt: parsedCheckIn }
-        })
-            .select('_id checkInDate checkOutDate status')
-            .lean();
-
-        if (conflict) {
-            return res.json({
-                success: true,
-                available: false,
-                code: 'DATES_UNAVAILABLE',
-                message: 'These dates are already requested or booked.'
-            });
-        }
+        }).select('_id checkInDate checkOutDate status');
 
         return res.json({
             success: true,
-            available: true,
-            code: 'DATES_AVAILABLE',
-            message: 'These dates are available.'
+            available: !conflict
         });
     } catch (error) {
         console.error('Availability check error:', error);
         return res.status(500).json({
             success: false,
-            available: false,
-            code: 'AVAILABILITY_ERROR',
-            message: 'Unable to check date availability right now.'
+            message: 'Unable to check date availability.'
         });
     }
 });
@@ -1376,7 +1313,8 @@ app.post('/api/upload-images', (req, res) => {
 
                         if (cloudResult?.url) {
                             results.push({
-                                url: cloudResult.url,
+                                url: optimizeCloudinaryUrl(cloudResult.url, { width: 1600 }),
+                                originalUrl: cloudResult.url,
                                 publicId: cloudResult.publicId
                             });
 
@@ -1448,8 +1386,23 @@ const getHomestaysHandler = async (req, res) => {
         if (maxPrice) queryFilter.pricePerNight = { $lte: Number(maxPrice) }; //[cite: 7]
         if (feature) queryFilter.features = { $in: [feature] }; //[cite: 7]
 
-        const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 }); //[cite: 7]
-        res.status(200).json({ success: true, count: listings.length, data: listings }); //[cite: 7]
+        const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 }).lean(); //[cite: 7]
+
+        const optimizedListings = listings.map(listing => ({
+            ...listing,
+            images: optimizePropertyImages(listing.images, 800),
+            photos: optimizePropertyImages(listing.photos, 800),
+            imageUrl: optimizeImageUrl(listing.imageUrl, 800),
+            image: optimizeImageUrl(listing.image, 800),
+            host: listing.host
+                ? {
+                    ...listing.host,
+                    avatar: optimizeImageUrl(listing.host.avatar, 400)
+                }
+                : listing.host
+        }));
+
+        res.status(200).json({ success: true, count: optimizedListings.length, data: optimizedListings }); //[cite: 7]
     } catch (error) {
         res.status(500).json({ success: false, message: 'Server Error' }); //[cite: 7]
     }
@@ -1475,6 +1428,17 @@ const getSingleHomestayHandler = async (req, res) => {
                 success: false,
                 message: 'Property not found'
             });
+        }
+
+        // Optimize existing Cloudinary images on delivery.
+        // The database continues to keep the original URLs.
+        homestay.images = optimizePropertyImages(homestay.images, 1600);
+        homestay.photos = optimizePropertyImages(homestay.photos, 1600);
+        homestay.imageUrl = optimizeImageUrl(homestay.imageUrl, 1600);
+        homestay.image = optimizeImageUrl(homestay.image, 1600);
+
+        if (homestay.host) {
+            homestay.host.avatar = optimizeImageUrl(homestay.host.avatar, 400);
         }
 
         // Only create fallback avatar if the real avatar is missing.
