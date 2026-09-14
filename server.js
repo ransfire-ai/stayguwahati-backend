@@ -228,6 +228,77 @@ function optimizePropertyImages(images, width = 1600) {
     return images.map(image => optimizeImageUrl(image, width));
 }
 
+// ------------------------------------------------------------
+// PUBLIC HOST ID ENRICHMENT
+// ------------------------------------------------------------
+// Legacy Homestay documents contain the host's email/name but do not
+// always contain the User._id. The frontend host-profile page uses an
+// ID-only URL (/host-profile?id=...). Resolve the User once on the
+// backend and expose the public hostId without changing old documents.
+// This keeps old listings working while making host-profile routing
+// deterministic.
+async function attachPublicHostId(listing) {
+    if (!listing || !listing.host) return listing;
+
+    const currentHostId =
+        listing.host.hostId ||
+        listing.host._id ||
+        listing.host.id ||
+        listing.host.userId ||
+        listing.host.ownerId ||
+        listing.hostId ||
+        listing.ownerId ||
+        listing.userId;
+
+    if (currentHostId) {
+        listing.host = {
+            ...listing.host,
+            hostId: String(currentHostId)
+        };
+        return listing;
+    }
+
+    const hostEmail = String(
+        listing.ownerEmail ||
+        listing.host?.email ||
+        ''
+    ).trim().toLowerCase();
+
+    if (!hostEmail) return listing;
+
+    try {
+        const user = await User.findOne(
+            { email: hostEmail },
+            { _id: 1, name: 1, avatar: 1, photo: 1, image: 1, profileImage: 1, profilePicture: 1 }
+        ).lean();
+
+        if (user?._id) {
+            listing.host = {
+                ...listing.host,
+                hostId: String(user._id),
+                name: listing.host.name || user.name || 'Host',
+                avatar:
+                    listing.host.avatar ||
+                    user.avatar ||
+                    user.photo ||
+                    user.image ||
+                    user.profileImage ||
+                    user.profilePicture ||
+                    ''
+            };
+        }
+    } catch (error) {
+        console.warn('[HOST ID] Could not resolve host ID:', error.message);
+    }
+
+    return listing;
+}
+
+async function enrichPublicHostIds(listings) {
+    if (!Array.isArray(listings) || listings.length === 0) return listings || [];
+    return Promise.all(listings.map(listing => attachPublicHostId(listing)));
+}
+
 
 if (cloudinaryConfigured) {
     console.log('☁️ Cloudinary image storage is ENABLED.');
@@ -1388,7 +1459,9 @@ const getHomestaysHandler = async (req, res) => {
 
         const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 }).lean(); //[cite: 7]
 
-        const optimizedListings = listings.map(listing => ({
+        const enrichedListings = await enrichPublicHostIds(listings);
+
+        const optimizedListings = enrichedListings.map(listing => ({
             ...listing,
             images: optimizePropertyImages(listing.images, 800),
             photos: optimizePropertyImages(listing.photos, 800),
@@ -1397,6 +1470,7 @@ const getHomestaysHandler = async (req, res) => {
             host: listing.host
                 ? {
                     ...listing.host,
+                    hostId: listing.host.hostId ? String(listing.host.hostId) : undefined,
                     avatar: optimizeImageUrl(listing.host.avatar, 400)
                 }
                 : listing.host
@@ -1429,6 +1503,10 @@ const getSingleHomestayHandler = async (req, res) => {
                 message: 'Property not found'
             });
         }
+
+        // Resolve the real User._id for ID-only host-profile routing.
+        // This does not modify the stored MongoDB document.
+        await attachPublicHostId(homestay);
 
         // Optimize existing Cloudinary images on delivery.
         // The database continues to keep the original URLs.
@@ -1486,6 +1564,113 @@ const getSingleHomestayHandler = async (req, res) => {
 app.get('/api/homestays', getHomestaysHandler); //[cite: 7]
 app.get('/api/properties', getHomestaysHandler); //[cite: 7]
 
+// Public host profile API. The frontend passes ONLY the User/ObjectId:
+// GET /api/hosts/:id
+// No email/name fallback is required for routing. Legacy listings are
+// still found by the user's email when their old MongoDB document does
+// not yet contain host.hostId.
+app.get('/api/hosts/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid host ID format.'
+            });
+        }
+
+        const user = await User.findById(id)
+            .select('_id name email avatar photo image profileImage profilePicture role')
+            .lean();
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'Host not found.'
+            });
+        }
+
+        const hostEmail = String(user.email || '').trim().toLowerCase();
+
+        const hostListings = await Homestay.find({
+            status: 'approved',
+            $or: [
+                { 'host.hostId': String(user._id) },
+                { 'host.hostId': user._id },
+                ...(hostEmail ? [
+                    { 'host.email': hostEmail },
+                    { ownerEmail: hostEmail }
+                ] : [])
+            ]
+        }).sort({ createdAt: -1 }).lean();
+
+        const listings = await Promise.all(hostListings.map(async listing => {
+            await attachPublicHostId(listing);
+            return {
+                ...listing,
+                images: optimizePropertyImages(listing.images, 800),
+                photos: optimizePropertyImages(listing.photos, 800),
+                host: listing.host
+                    ? {
+                        ...listing.host,
+                        hostId: String(user._id),
+                        avatar: optimizeImageUrl(
+                            listing.host.avatar ||
+                            user.avatar ||
+                            user.photo ||
+                            user.image ||
+                            user.profileImage ||
+                            user.profilePicture ||
+                            '',
+                            400
+                        )
+                    }
+                    : {
+                        hostId: String(user._id),
+                        name: user.name || 'Host',
+                        avatar: optimizeImageUrl(
+                            user.avatar ||
+                            user.photo ||
+                            user.image ||
+                            user.profileImage ||
+                            user.profilePicture ||
+                            '',
+                            400
+                        )
+                    }
+            };
+        }));
+
+        return res.json({
+            success: true,
+            data: {
+                host: {
+                    id: String(user._id),
+                    name: user.name || 'StayGuwahati Host',
+                    avatar: optimizeImageUrl(
+                        user.avatar ||
+                        user.photo ||
+                        user.image ||
+                        user.profileImage ||
+                        user.profilePicture ||
+                        '',
+                        400
+                    ),
+                    isVerified: listings.some(p => p.host?.isVerified === true)
+                },
+                properties: listings
+            }
+        });
+    } catch (error) {
+        console.error('[HOST PROFILE] Fetch error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Unable to load host profile.'
+        });
+    }
+});
+
 app.get('/api/homestays/:id', getSingleHomestayHandler); //[cite: 7]
 app.get('/api/properties/:id', getSingleHomestayHandler); //[cite: 7]
 
@@ -1537,29 +1722,45 @@ app.get('/api/homestays/:id/image', async (req, res) => {
 
 app.post('/api/homestays', async (req, res) => {
     try {
+        const hostEmail = String(
+            req.body.email ||
+            req.body.host?.email ||
+            ''
+        ).trim().toLowerCase();
+
+        let resolvedHostId = '';
+        if (hostEmail) {
+            try {
+                const hostUser = await User.findOne({ email: hostEmail }, { _id: 1 }).lean();
+                if (hostUser?._id) resolvedHostId = String(hostUser._id);
+            } catch (lookupError) {
+                console.warn('[HOST ID] Listing creation lookup failed:', lookupError.message);
+            }
+        }
+
         const formattedData = {
             ...req.body,
             host: {
-    name:
-        req.body.owner ||
-        req.body.host?.name ||
-        'Unknown Host',
+                name:
+                    req.body.owner ||
+                    req.body.host?.name ||
+                    'Unknown Host',
 
-    phone:
-        req.body.phone ||
-        req.body.host?.phone ||
-        '',
+                phone:
+                    req.body.phone ||
+                    req.body.host?.phone ||
+                    '',
 
-    email:
-        req.body.email ||
-        req.body.host?.email ||
-        '',
+                email:
+                    hostEmail,
 
-    avatar:
-        req.body.avatar ||
-        req.body.host?.avatar ||
-        ''
-},
+                avatar:
+                    req.body.avatar ||
+                    req.body.host?.avatar ||
+                    '',
+
+                ...(resolvedHostId ? { hostId: resolvedHostId } : {})
+            },
             status: req.body.status ? req.body.status.toLowerCase() : 'pending'
         }; //[cite: 7]
 
