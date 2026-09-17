@@ -25,6 +25,7 @@ const User = require('./models/User'); //[cite: 7]
 const Booking = require('./models/Booking'); //[cite: 7]
 const Message = require('./models/message'); //[cite: 7]
 const Review = require('./models/Review'); //[cite: 7]
+const HostAgreement = require('./models/HostAgreement');
 
 const app = express(); //[cite: 7]
 
@@ -357,7 +358,14 @@ function hostIdentityFromProperty(property) {
 async function resolveHostCommissionRate(property) {
     const explicit = Number(property?.commissionRate);
     if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+
     const target = hostIdentityFromProperty(property);
+    if (target) {
+        const acceptedAgreement = await HostAgreement.findOne({ hostEmail: target, status: 'accepted' }).select('commissionRate').lean();
+        if (acceptedAgreement && Number.isFinite(Number(acceptedAgreement.commissionRate)) && Number(acceptedAgreement.commissionRate) >= 0) {
+            return Number(acceptedAgreement.commissionRate);
+        }
+    }
     if (!target || FOUNDING_HOST_LIMIT <= 0) return STANDARD_HOST_COMMISSION_RATE;
     const properties = await Homestay.find({
         $or: [{ ownerEmail: { $exists: true, $ne: '' } }, { 'host.email': { $exists: true, $ne: '' } }]
@@ -369,6 +377,129 @@ async function resolveHostCommissionRate(property) {
         if (identity && !seen.has(identity)) { seen.add(identity); hosts.push(identity); }
     }
     return hosts.slice(0, FOUNDING_HOST_LIMIT).includes(target) ? FOUNDING_HOST_COMMISSION_RATE : STANDARD_HOST_COMMISSION_RATE;
+}
+
+const HOST_AGREEMENT_VERSION = process.env.STAYGUWAHATI_HOST_AGREEMENT_VERSION || 'SG-2026-01';
+
+const HOST_AGREEMENT_TERMS = [
+    {
+        title: '1. Platform Role',
+        body: 'StayGuwahati is a marketplace and booking coordination platform that helps guests discover local accommodation providers. The host remains responsible for the accommodation, guest stay, property operations, and compliance with applicable laws.'
+    },
+    {
+        title: '2. Guest Payments',
+        body: 'Guest accommodation payments are made directly to the Host. StayGuwahati does not collect, hold, or process the accommodation amount for the Host under this arrangement. The Host is responsible for providing the guest with accurate payment instructions and applicable receipts.'
+    },
+    {
+        title: '3. StayGuwahati Commission',
+        body: 'The Host agrees to pay StayGuwahati the applicable commission on confirmed/completed booking value generated through the platform. Applicable taxes on StayGuwahati\'s commission may be charged in addition. The commission rate recorded for a booking is a snapshot and is not changed retrospectively by later rate changes.'
+    },
+    {
+        title: '4. Founding Host Rate',
+        body: 'The first 30 Host accounts accepted into the founding-host programme may receive the Founding Host Commission Rate shown in the Host Dashboard. The applicable rate is recorded when the Host accepts this agreement and remains the Host\'s recorded rate unless the parties agree otherwise in writing. Hosts outside the founding allocation are subject to the Standard Commission Rate shown in the dashboard.'
+    },
+    {
+        title: '5. Property Information',
+        body: 'The Host must provide truthful, current, and complete information about the property, including photographs, location, amenities, pricing, availability, house rules, and cancellation terms. The Host must promptly correct information that becomes inaccurate.'
+    },
+    {
+        title: '6. Bookings and Availability',
+        body: 'The Host agrees to keep availability reasonably accurate and to honour bookings accepted through StayGuwahati, subject to legitimate cancellation circumstances and the published property policy. The Host must not knowingly accept overlapping reservations for the same accommodation dates.'
+    },
+    {
+        title: '7. Cancellation, Refunds and Guest Issues',
+        body: 'The Host is responsible for accommodation-side cancellations, refunds, check-in arrangements, property issues, and guest communications relating to the stay. Any refund owed to a guest for a direct payment is the Host\'s responsibility. StayGuwahati may assist with communication and platform support but does not become the guest\'s accommodation payment custodian.'
+    },
+    {
+        title: '8. Safety, Legality and Compliance',
+        body: 'The Host is responsible for ensuring that the property and its operation comply with applicable local, state, and national requirements, including any permissions, registrations, taxes, safety requirements, building rules, and guest-identification requirements that apply to the property.'
+    },
+    {
+        title: '9. Platform Standards',
+        body: 'StayGuwahati may review listings, request supporting information, suspend a listing, or remove a listing where information is materially inaccurate, a safety concern is reported, the Host breaches this agreement, or continued listing is otherwise inconsistent with platform requirements.'
+    },
+    {
+        title: '10. Host Responsibility and Indemnity',
+        body: 'The Host remains responsible for the property, services supplied to guests, and claims arising from the Host\'s acts or omissions. To the extent permitted by applicable law, the Host agrees to protect StayGuwahati from losses, claims, penalties, or costs arising from the Host\'s breach of this agreement or unlawful operation of the property.'
+    },
+    {
+        title: '11. Privacy and Guest Data',
+        body: 'The Host must use guest information only for legitimate booking, check-in, safety, support, and legal purposes and must take reasonable steps to protect that information from unauthorized access or disclosure.'
+    },
+    {
+        title: '12. Termination',
+        body: 'Either party may discontinue the partnership subject to any outstanding booking, payment, refund, dispute, or commission obligations. StayGuwahati may suspend or terminate access immediately where necessary to address fraud, safety, serious policy violations, or legal requirements.'
+    },
+    {
+        title: '13. Changes to Terms',
+        body: 'StayGuwahati may publish updated partnership terms for future bookings. Material changes will be presented to Hosts where required. A new agreement version may be required before continued use of the platform.'
+    },
+    {
+        title: '14. Electronic Acceptance',
+        body: 'By selecting “I Agree & Accept”, the Host confirms that the Host has read this agreement, understands its terms, and voluntarily accepts it electronically. The platform records the Host account, agreement version, applicable commission rate, acceptance date/time, and technical acceptance details for its records.'
+    },
+    {
+        title: '15. Governing Law and Disputes',
+        body: 'This partnership is subject to the laws applicable in India. The parties will first attempt to resolve disputes through good-faith communication. Nothing in this agreement limits rights or remedies that cannot lawfully be excluded.'
+    }
+];
+
+function agreementHostEmail(user) {
+    return String(user?.email || '').trim().toLowerCase();
+}
+
+async function getOrCreateHostAgreement(user) {
+    if (!user?.userId || !mongoose.Types.ObjectId.isValid(String(user.userId))) return null;
+    let agreement = await HostAgreement.findOne({ userId: user.userId });
+    if (!agreement) {
+        agreement = await HostAgreement.create({
+            userId: user.userId,
+            hostName: String(user.name || '').trim(),
+            hostEmail: agreementHostEmail(user),
+            version: HOST_AGREEMENT_VERSION,
+            status: 'pending',
+            acceptanceMethod: 'i_agree_accept'
+        });
+    } else if (agreement.status !== 'accepted') {
+        const updates = {};
+        if (!agreement.hostName && user.name) updates.hostName = String(user.name).trim();
+        if (!agreement.hostEmail && user.email) updates.hostEmail = agreementHostEmail(user);
+        if (Object.keys(updates).length) {
+            Object.assign(agreement, updates);
+            await agreement.save();
+        }
+    }
+    return agreement;
+}
+
+async function assignAgreementCommissionRate(user, agreement) {
+    if (agreement.commissionRate !== null && agreement.commissionRate !== undefined && Number.isFinite(Number(agreement.commissionRate))) {
+        return Number(agreement.commissionRate);
+    }
+
+    const hostEmail = agreementHostEmail(user);
+    const explicitProperty = hostEmail
+        ? await Homestay.findOne({
+            $or: [{ ownerEmail: hostEmail }, { 'host.email': hostEmail }, { hostEmail }],
+            commissionRate: { $exists: true, $ne: null }
+        }).select('commissionRate').lean()
+        : null;
+
+    if (explicitProperty && Number.isFinite(Number(explicitProperty.commissionRate)) && Number(explicitProperty.commissionRate) >= 0) {
+        agreement.commissionRate = Number(explicitProperty.commissionRate);
+        return agreement.commissionRate;
+    }
+
+    const foundingAccepted = await HostAgreement.countDocuments({
+        status: 'accepted',
+        commissionRate: FOUNDING_HOST_COMMISSION_RATE,
+        _id: { $ne: agreement._id }
+    });
+
+    agreement.commissionRate = foundingAccepted < FOUNDING_HOST_LIMIT
+        ? FOUNDING_HOST_COMMISSION_RATE
+        : STANDARD_HOST_COMMISSION_RATE;
+    return agreement.commissionRate;
 }
 
 async function buildSettlementSnapshot(booking, persist = true) {
@@ -394,11 +525,10 @@ async function buildSettlementSnapshot(booking, persist = true) {
     else if (settlementStatus !== 'disputed') settlementStatus = 'pending';
     const snapshot = { commissionRate: rate, commissionBase, commissionAmount, commissionTaxRate: taxRate, commissionTaxAmount: taxAmount, commissionTotal, settlementStatus, paymentMethod: 'direct_to_host' };
     if (persist && commissionBase > 0 && (booking.commissionRate == null || Number(booking.commissionBase || 0) !== commissionBase || Number(booking.commissionAmount || 0) !== commissionAmount || Number(booking.commissionTaxRate || 0) !== taxRate || Number(booking.commissionTaxAmount || 0) !== taxAmount || Number(booking.commissionTotal || 0) !== commissionTotal || String(booking.settlementStatus || '').toLowerCase() !== settlementStatus)) {
-        // IMPORTANT: some older Booking documents predate the required
-        // propertyId/checkInDate/checkOutDate fields. Calling booking.save()
-        // on those legacy documents re-runs Mongoose validation and makes the
-        // admin settlement endpoint fail. Settlement fields are independent of
-        // those booking fields, so update only the snapshot fields directly.
+        // Do not call booking.save() here. Older Booking documents may not
+        // contain fields that are required by the current Booking schema.
+        // Updating only the settlement snapshot avoids re-validating legacy
+        // booking fields while preserving the settlement record.
         Object.assign(booking, snapshot);
         await Booking.updateOne(
             { _id: booking._id },
@@ -577,6 +707,99 @@ app.post('/api/auth/reset-password', async (req, res) => {
     }
 }); //[cite: 7]
 
+// 3.9 Host Partnership Agreement
+app.get('/api/host-agreement', authenticateToken, async (req, res) => {
+    try {
+        const agreement = await getOrCreateHostAgreement(req.user);
+        if (!agreement) return res.status(400).json({ success: false, message: 'Unable to identify the host account.' });
+
+        return res.json({
+            success: true,
+            data: {
+                agreement: agreement.toObject(),
+                version: HOST_AGREEMENT_VERSION,
+                terms: HOST_AGREEMENT_TERMS,
+                config: {
+                    foundingHostLimit: FOUNDING_HOST_LIMIT,
+                    foundingHostCommissionRate: FOUNDING_HOST_COMMISSION_RATE,
+                    standardCommissionRate: STANDARD_HOST_COMMISSION_RATE,
+                    commissionTaxRate: COMMISSION_TAX_RATE,
+                    guestPayment: 'direct_to_host'
+                }
+            }
+        });
+    } catch (error) {
+        console.error('[HOST AGREEMENT] Fetch error:', error);
+        return res.status(500).json({ success: false, message: 'Unable to load the Host Partnership Agreement.' });
+    }
+});
+
+app.post('/api/host-agreement/accept', authenticateToken, async (req, res) => {
+    try {
+        const agreement = await getOrCreateHostAgreement(req.user);
+        if (!agreement) return res.status(400).json({ success: false, message: 'Unable to identify the host account.' });
+
+        if (agreement.status === 'accepted') {
+            return res.json({ success: true, message: 'Host Partnership Agreement is already accepted.', data: agreement });
+        }
+
+        if (String(req.body?.agreementVersion || '') !== HOST_AGREEMENT_VERSION) {
+            return res.status(409).json({ success: false, message: 'This agreement version is no longer current. Please reload the agreement.' });
+        }
+
+        const confirmed = req.body?.confirmed === true;
+        if (!confirmed) {
+            return res.status(400).json({ success: false, message: 'Please confirm that you have read and agree to the Host Partnership Agreement.' });
+        }
+
+        const commissionRate = await assignAgreementCommissionRate(req.user, agreement);
+        agreement.version = HOST_AGREEMENT_VERSION;
+        agreement.hostName = String(req.user?.name || agreement.hostName || '').trim();
+        agreement.hostEmail = agreementHostEmail(req.user) || agreement.hostEmail;
+        agreement.status = 'accepted';
+        agreement.acceptedAt = new Date();
+        agreement.acceptanceMethod = 'i_agree_accept';
+        agreement.ipAddress = String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim();
+        agreement.userAgent = String(req.headers['user-agent'] || '').slice(0, 1000);
+        agreement.commissionRate = commissionRate;
+        await agreement.save();
+
+        return res.json({
+            success: true,
+            message: 'Host Partnership Agreement accepted successfully.',
+            data: agreement
+        });
+    } catch (error) {
+        console.error('[HOST AGREEMENT] Acceptance error:', error);
+        return res.status(500).json({ success: false, message: 'Unable to record agreement acceptance.' });
+    }
+});
+
+app.get('/api/admin/host-agreements', authenticateToken, authorizeAdmin, async (req, res) => {
+    try {
+        const status = String(req.query.status || 'all').trim().toLowerCase();
+        const query = status !== 'all' ? { status } : {};
+        const agreements = await HostAgreement.find(query).sort({ acceptedAt: -1, updatedAt: -1 }).lean();
+        const accepted = agreements.filter((a) => a.status === 'accepted');
+        const foundingAccepted = accepted.filter((a) => Number(a.commissionRate) === FOUNDING_HOST_COMMISSION_RATE).length;
+        return res.json({
+            success: true,
+            data: agreements,
+            config: {
+                version: HOST_AGREEMENT_VERSION,
+                foundingHostLimit: FOUNDING_HOST_LIMIT,
+                foundingHostCommissionRate: FOUNDING_HOST_COMMISSION_RATE,
+                standardCommissionRate: STANDARD_HOST_COMMISSION_RATE,
+                acceptedCount: accepted.length,
+                foundingAcceptedCount: foundingAccepted
+            }
+        });
+    } catch (error) {
+        console.error('[ADMIN HOST AGREEMENTS] Fetch error:', error);
+        return res.status(500).json({ success: false, message: 'Unable to load host partnership agreements.' });
+    }
+});
+
 // 4. Booking Routes[cite: 7]
 app.get('/api/bookings', async (req, res) => {
     try {
@@ -734,6 +957,12 @@ app.post('/api/bookings', async (req, res) => {
         }
 
         const hostEmail = String(property.ownerEmail || property.host?.email || '').trim().toLowerCase();
+        const acceptedHostAgreement = hostEmail
+            ? await HostAgreement.findOne({ hostEmail, status: 'accepted' }).select('commissionRate').lean()
+            : null;
+        const bookingCommissionRate = acceptedHostAgreement && Number.isFinite(Number(acceptedHostAgreement.commissionRate))
+            ? Number(acceptedHostAgreement.commissionRate)
+            : await resolveHostCommissionRate(property);
         const reviewToken = crypto.randomBytes(32).toString('hex');
         const booking = new Booking({
             firstName: finalFirstName,
@@ -753,6 +982,8 @@ app.post('/api/bookings', async (req, res) => {
             totalPrice: serverTotal,
             nightlyRate,
             specialRequests: String(specialRequests || '').trim(),
+            paymentMethod: 'direct_to_host',
+            commissionRate: bookingCommissionRate,
             status: 'Requested',
             reviewToken,
             reviewSubmitted: false,
@@ -846,7 +1077,26 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
                 paymentStatus: 'unpaid'
             });
         }
-        await booking.save();
+        // Use a targeted update so legacy bookings missing newer required
+        // fields can still be confirmed without full-document validation.
+        await Booking.updateOne(
+            { _id: booking._id },
+            {
+                $set: {
+                    status: booking.status,
+                    commissionRate: booking.commissionRate,
+                    commissionBase: booking.commissionBase,
+                    commissionAmount: booking.commissionAmount,
+                    commissionTaxRate: booking.commissionTaxRate,
+                    commissionTaxAmount: booking.commissionTaxAmount,
+                    commissionTotal: booking.commissionTotal,
+                    settlementStatus: booking.settlementStatus,
+                    paymentMethod: booking.paymentMethod,
+                    paymentStatus: booking.paymentStatus
+                }
+            },
+            { runValidators: false }
+        );
 
         if (resend && booking.email) {
             const approved = newStatus === 'Confirmed';
@@ -902,7 +1152,20 @@ app.patch('/api/admin/settlements/:id/payment', authenticateToken, authorizeAdmi
         booking.settlementTransactionReference = String(req.body.transactionReference || '').trim();
         booking.settlementNotes = String(req.body.notes || '').trim();
         booking.settlementStatus = newPaid >= s.commissionTotal ? 'paid' : 'partially_paid';
-        await booking.save();
+        await Booking.updateOne(
+            { _id: booking._id },
+            {
+                $set: {
+                    settlementPaidAmount: newPaid,
+                    settlementPaymentDate: booking.settlementPaymentDate,
+                    settlementPaymentMethod: booking.settlementPaymentMethod,
+                    settlementTransactionReference: booking.settlementTransactionReference,
+                    settlementNotes: booking.settlementNotes,
+                    settlementStatus: booking.settlementStatus
+                }
+            },
+            { runValidators: false }
+        );
         return res.json({success:true,message:booking.settlementStatus==='paid'?'Settlement marked as paid.':'Partial settlement recorded.',data:booking});
     } catch (error) { console.error('[ADMIN SETTLEMENTS] Payment update error:', error); return res.status(500).json({success:false,message:'Unable to record settlement payment.'}); }
 });
