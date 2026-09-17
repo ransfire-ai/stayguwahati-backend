@@ -228,77 +228,6 @@ function optimizePropertyImages(images, width = 1600) {
     return images.map(image => optimizeImageUrl(image, width));
 }
 
-// ------------------------------------------------------------
-// PUBLIC HOST ID ENRICHMENT
-// ------------------------------------------------------------
-// Legacy Homestay documents contain the host's email/name but do not
-// always contain the User._id. The frontend host-profile page uses an
-// ID-only URL (/host-profile?id=...). Resolve the User once on the
-// backend and expose the public hostId without changing old documents.
-// This keeps old listings working while making host-profile routing
-// deterministic.
-async function attachPublicHostId(listing) {
-    if (!listing || !listing.host) return listing;
-
-    const currentHostId =
-        listing.host.hostId ||
-        listing.host._id ||
-        listing.host.id ||
-        listing.host.userId ||
-        listing.host.ownerId ||
-        listing.hostId ||
-        listing.ownerId ||
-        listing.userId;
-
-    if (currentHostId) {
-        listing.host = {
-            ...listing.host,
-            hostId: String(currentHostId)
-        };
-        return listing;
-    }
-
-    const hostEmail = String(
-        listing.ownerEmail ||
-        listing.host?.email ||
-        ''
-    ).trim().toLowerCase();
-
-    if (!hostEmail) return listing;
-
-    try {
-        const user = await User.findOne(
-            { email: hostEmail },
-            { _id: 1, name: 1, avatar: 1, photo: 1, image: 1, profileImage: 1, profilePicture: 1 }
-        ).lean();
-
-        if (user?._id) {
-            listing.host = {
-                ...listing.host,
-                hostId: String(user._id),
-                name: listing.host.name || user.name || 'Host',
-                avatar:
-                    listing.host.avatar ||
-                    user.avatar ||
-                    user.photo ||
-                    user.image ||
-                    user.profileImage ||
-                    user.profilePicture ||
-                    ''
-            };
-        }
-    } catch (error) {
-        console.warn('[HOST ID] Could not resolve host ID:', error.message);
-    }
-
-    return listing;
-}
-
-async function enrichPublicHostIds(listings) {
-    if (!Array.isArray(listings) || listings.length === 0) return listings || [];
-    return Promise.all(listings.map(listing => attachPublicHostId(listing)));
-}
-
 
 if (cloudinaryConfigured) {
     console.log('☁️ Cloudinary image storage is ENABLED.');
@@ -411,6 +340,65 @@ const authorizeAdmin = (req, res, next) => {
     }
     return res.status(403).json({ success: false, message: 'Access denied. Admin rights required.' }); //[cite: 7]
 }; //[cite: 7]
+
+// ============================================================
+// DIRECT-TO-HOST COMMISSION SETTLEMENTS
+// Guest accommodation payments do not pass through StayGuwahati.
+// ============================================================
+const FOUNDING_HOST_LIMIT = Math.max(0, Number(process.env.FOUNDING_HOST_LIMIT || 30));
+const FOUNDING_HOST_COMMISSION_RATE = Number(process.env.STAYGUWAHATI_FOUNDING_COMMISSION_RATE || 8);
+const STANDARD_HOST_COMMISSION_RATE = Number(process.env.STAYGUWAHATI_STANDARD_COMMISSION_RATE || 10);
+const COMMISSION_TAX_RATE = Number(process.env.STAYGUWAHATI_COMMISSION_TAX_RATE || 18);
+
+function hostIdentityFromProperty(property) {
+    return String(property?.ownerEmail || property?.host?.email || property?.hostEmail || '').trim().toLowerCase();
+}
+
+async function resolveHostCommissionRate(property) {
+    const explicit = Number(property?.commissionRate);
+    if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+    const target = hostIdentityFromProperty(property);
+    if (!target || FOUNDING_HOST_LIMIT <= 0) return STANDARD_HOST_COMMISSION_RATE;
+    const properties = await Homestay.find({
+        $or: [{ ownerEmail: { $exists: true, $ne: '' } }, { 'host.email': { $exists: true, $ne: '' } }]
+    }).select('ownerEmail host.email createdAt _id').sort({ createdAt: 1, _id: 1 }).lean();
+    const seen = new Set();
+    const hosts = [];
+    for (const p of properties) {
+        const identity = hostIdentityFromProperty(p);
+        if (identity && !seen.has(identity)) { seen.add(identity); hosts.push(identity); }
+    }
+    return hosts.slice(0, FOUNDING_HOST_LIMIT).includes(target) ? FOUNDING_HOST_COMMISSION_RATE : STANDARD_HOST_COMMISSION_RATE;
+}
+
+async function buildSettlementSnapshot(booking, persist = true) {
+    const status = String(booking?.status || '').trim().toLowerCase();
+    const property = booking?.homestayId && typeof booking.homestayId === 'object'
+        ? booking.homestayId
+        : (booking?.propertyId && mongoose.Types.ObjectId.isValid(String(booking.propertyId)) ? await Homestay.findById(booking.propertyId).lean() : null);
+    const bookingValue = Math.max(0, Number(booking?.totalPrice || 0));
+    const commissionBase = ['confirmed', 'completed', 'accepted', 'approved'].includes(status) ? bookingValue : 0;
+    const hasSavedRate = booking?.commissionRate !== undefined && booking?.commissionRate !== null && booking?.commissionRate !== '';
+    const existingRate = Number(booking?.commissionRate);
+    const rate = hasSavedRate && Number.isFinite(existingRate) && existingRate >= 0 ? existingRate : await resolveHostCommissionRate(property || { hostEmail: booking?.hostEmail });
+    const commissionAmount = Number((commissionBase * rate / 100).toFixed(2));
+    const hasSavedTaxRate = booking?.commissionTaxRate !== undefined && booking?.commissionTaxRate !== null && booking?.commissionTaxRate !== '';
+    const taxRate = hasSavedTaxRate && Number.isFinite(Number(booking.commissionTaxRate)) && Number(booking.commissionTaxRate) >= 0 ? Number(booking.commissionTaxRate) : COMMISSION_TAX_RATE;
+    const taxAmount = Number((commissionAmount * taxRate / 100).toFixed(2));
+    const commissionTotal = Number((commissionAmount + taxAmount).toFixed(2));
+    const paidAmount = Math.max(0, Number(booking?.settlementPaidAmount || 0));
+    let settlementStatus = String(booking?.settlementStatus || '').toLowerCase();
+    if (!commissionTotal) settlementStatus = 'not_due';
+    else if (paidAmount >= commissionTotal) settlementStatus = 'paid';
+    else if (paidAmount > 0) settlementStatus = 'partially_paid';
+    else if (settlementStatus !== 'disputed') settlementStatus = 'pending';
+    const snapshot = { commissionRate: rate, commissionBase, commissionAmount, commissionTaxRate: taxRate, commissionTaxAmount: taxAmount, commissionTotal, settlementStatus, paymentMethod: 'direct_to_host' };
+    if (persist && commissionBase > 0 && (booking.commissionRate == null || Number(booking.commissionBase || 0) !== commissionBase || Number(booking.commissionAmount || 0) !== commissionAmount || Number(booking.commissionTaxRate || 0) !== taxRate || Number(booking.commissionTaxAmount || 0) !== taxAmount || Number(booking.commissionTotal || 0) !== commissionTotal || String(booking.settlementStatus || '').toLowerCase() !== settlementStatus)) {
+        Object.assign(booking, snapshot);
+        await booking.save();
+    }
+    return { ...snapshot, bookingValue, paidAmount, outstandingAmount: Number(Math.max(0, commissionTotal - paidAmount).toFixed(2)) };
+}
 
 // Basic health/status endpoint
 app.get('/api/health', (req, res) => {
@@ -838,6 +826,17 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
         }
 
         booking.status = newStatus;
+        // Snapshot the applicable commission when a booking is confirmed.
+        // The guest still pays the host directly; this only records the host's
+        // StayGuwahati commission obligation for historical statements.
+        if (newStatus === 'Confirmed') {
+            const settlement = await buildSettlementSnapshot(booking, false);
+            Object.assign(booking, {
+                ...settlement,
+                paymentMethod: 'direct_to_host',
+                paymentStatus: 'unpaid'
+            });
+        }
         await booking.save();
 
         if (resend && booking.email) {
@@ -856,6 +855,47 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
         console.error('Booking status update error:', error);
         return res.status(500).json({ success: false, message: 'Server error while updating booking.' });
     }
+});
+
+// Admin host commission / settlement statement
+app.get('/api/admin/settlements', authenticateToken, authorizeAdmin, async (req, res) => {
+    try {
+        const { host, status, from, to } = req.query;
+        const query = {};
+        if (host) query.hostEmail = String(host).trim().toLowerCase();
+        if (from || to) { query.createdAt = {}; if (from) query.createdAt.$gte = new Date(String(from)); if (to) { const d = new Date(String(to)); if (!Number.isNaN(d.getTime())) { d.setHours(23,59,59,999); query.createdAt.$lte = d; } } }
+        const bookings = await Booking.find(query).populate('homestayId').sort({ createdAt: -1 });
+        const data = [];
+        for (const booking of bookings) {
+            const s = await buildSettlementSnapshot(booking);
+            if (status && String(status).toLowerCase() !== 'all' && s.settlementStatus !== String(status).toLowerCase()) continue;
+            data.push({ ...booking.toObject(), settlement: s });
+        }
+        const summary = data.reduce((a, x) => { const s=x.settlement||{}; a.bookingValue+=Number(s.bookingValue||0); a.commission+=Number(s.commissionAmount||0); a.tax+=Number(s.commissionTaxAmount||0); a.totalDue+=Number(s.commissionTotal||0); a.paid+=Number(s.paidAmount||0); a.outstanding+=Number(s.outstandingAmount||0); return a; }, {bookingValue:0,commission:0,tax:0,totalDue:0,paid:0,outstanding:0});
+        return res.json({ success:true, config:{foundingHostLimit:FOUNDING_HOST_LIMIT,foundingHostCommissionRate:FOUNDING_HOST_COMMISSION_RATE,standardCommissionRate:STANDARD_HOST_COMMISSION_RATE,commissionTaxRate:COMMISSION_TAX_RATE,guestPayment:'direct_to_host'}, summary, data });
+    } catch (error) { console.error('[ADMIN SETTLEMENTS] Fetch error:', error); return res.status(500).json({success:false,message:'Unable to load host settlement statements.'}); }
+});
+
+app.patch('/api/admin/settlements/:id/payment', authenticateToken, authorizeAdmin, async (req, res) => {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({success:false,message:'Invalid Booking ID.'});
+        const booking = await Booking.findById(req.params.id).populate('homestayId');
+        if (!booking) return res.status(404).json({success:false,message:'Booking not found.'});
+        const s = await buildSettlementSnapshot(booking);
+        const amount = Number(req.body.amount);
+        if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({success:false,message:'A valid payment amount is required.'});
+        const currentPaid = Math.max(0, Number(booking.settlementPaidAmount || 0));
+        const newPaid = Number((currentPaid + amount).toFixed(2));
+        if (newPaid > s.commissionTotal + 0.01) return res.status(400).json({success:false,message:`Payment exceeds outstanding amount of ₹${Math.max(0,s.commissionTotal-currentPaid).toFixed(2)}.`});
+        booking.settlementPaidAmount = newPaid;
+        booking.settlementPaymentDate = req.body.paymentDate ? new Date(req.body.paymentDate) : new Date();
+        booking.settlementPaymentMethod = String(req.body.paymentMethod || 'bank_transfer').trim();
+        booking.settlementTransactionReference = String(req.body.transactionReference || '').trim();
+        booking.settlementNotes = String(req.body.notes || '').trim();
+        booking.settlementStatus = newPaid >= s.commissionTotal ? 'paid' : 'partially_paid';
+        await booking.save();
+        return res.json({success:true,message:booking.settlementStatus==='paid'?'Settlement marked as paid.':'Partial settlement recorded.',data:booking});
+    } catch (error) { console.error('[ADMIN SETTLEMENTS] Payment update error:', error); return res.status(500).json({success:false,message:'Unable to record settlement payment.'}); }
 });
 
 // 4.2 Get Reviews Route[cite: 7]
@@ -1459,9 +1499,7 @@ const getHomestaysHandler = async (req, res) => {
 
         const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 }).lean(); //[cite: 7]
 
-        const enrichedListings = await enrichPublicHostIds(listings);
-
-        const optimizedListings = enrichedListings.map(listing => ({
+        const optimizedListings = listings.map(listing => ({
             ...listing,
             images: optimizePropertyImages(listing.images, 800),
             photos: optimizePropertyImages(listing.photos, 800),
@@ -1470,7 +1508,6 @@ const getHomestaysHandler = async (req, res) => {
             host: listing.host
                 ? {
                     ...listing.host,
-                    hostId: listing.host.hostId ? String(listing.host.hostId) : undefined,
                     avatar: optimizeImageUrl(listing.host.avatar, 400)
                 }
                 : listing.host
@@ -1503,10 +1540,6 @@ const getSingleHomestayHandler = async (req, res) => {
                 message: 'Property not found'
             });
         }
-
-        // Resolve the real User._id for ID-only host-profile routing.
-        // This does not modify the stored MongoDB document.
-        await attachPublicHostId(homestay);
 
         // Optimize existing Cloudinary images on delivery.
         // The database continues to keep the original URLs.
@@ -1564,113 +1597,6 @@ const getSingleHomestayHandler = async (req, res) => {
 app.get('/api/homestays', getHomestaysHandler); //[cite: 7]
 app.get('/api/properties', getHomestaysHandler); //[cite: 7]
 
-// Public host profile API. The frontend passes ONLY the User/ObjectId:
-// GET /api/hosts/:id
-// No email/name fallback is required for routing. Legacy listings are
-// still found by the user's email when their old MongoDB document does
-// not yet contain host.hostId.
-app.get('/api/hosts/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-
-        if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid host ID format.'
-            });
-        }
-
-        const user = await User.findById(id)
-            .select('_id name email avatar photo image profileImage profilePicture role')
-            .lean();
-
-        if (!user) {
-            return res.status(404).json({
-                success: false,
-                message: 'Host not found.'
-            });
-        }
-
-        const hostEmail = String(user.email || '').trim().toLowerCase();
-
-        const hostListings = await Homestay.find({
-            status: 'approved',
-            $or: [
-                { 'host.hostId': String(user._id) },
-                { 'host.hostId': user._id },
-                ...(hostEmail ? [
-                    { 'host.email': hostEmail },
-                    { ownerEmail: hostEmail }
-                ] : [])
-            ]
-        }).sort({ createdAt: -1 }).lean();
-
-        const listings = await Promise.all(hostListings.map(async listing => {
-            await attachPublicHostId(listing);
-            return {
-                ...listing,
-                images: optimizePropertyImages(listing.images, 800),
-                photos: optimizePropertyImages(listing.photos, 800),
-                host: listing.host
-                    ? {
-                        ...listing.host,
-                        hostId: String(user._id),
-                        avatar: optimizeImageUrl(
-                            listing.host.avatar ||
-                            user.avatar ||
-                            user.photo ||
-                            user.image ||
-                            user.profileImage ||
-                            user.profilePicture ||
-                            '',
-                            400
-                        )
-                    }
-                    : {
-                        hostId: String(user._id),
-                        name: user.name || 'Host',
-                        avatar: optimizeImageUrl(
-                            user.avatar ||
-                            user.photo ||
-                            user.image ||
-                            user.profileImage ||
-                            user.profilePicture ||
-                            '',
-                            400
-                        )
-                    }
-            };
-        }));
-
-        return res.json({
-            success: true,
-            data: {
-                host: {
-                    id: String(user._id),
-                    name: user.name || 'StayGuwahati Host',
-                    avatar: optimizeImageUrl(
-                        user.avatar ||
-                        user.photo ||
-                        user.image ||
-                        user.profileImage ||
-                        user.profilePicture ||
-                        '',
-                        400
-                    ),
-                    isVerified: listings.some(p => p.host?.isVerified === true)
-                },
-                properties: listings
-            }
-        });
-    } catch (error) {
-        console.error('[HOST PROFILE] Fetch error:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Unable to load host profile.'
-        });
-    }
-});
-
 app.get('/api/homestays/:id', getSingleHomestayHandler); //[cite: 7]
 app.get('/api/properties/:id', getSingleHomestayHandler); //[cite: 7]
 
@@ -1722,45 +1648,29 @@ app.get('/api/homestays/:id/image', async (req, res) => {
 
 app.post('/api/homestays', async (req, res) => {
     try {
-        const hostEmail = String(
-            req.body.email ||
-            req.body.host?.email ||
-            ''
-        ).trim().toLowerCase();
-
-        let resolvedHostId = '';
-        if (hostEmail) {
-            try {
-                const hostUser = await User.findOne({ email: hostEmail }, { _id: 1 }).lean();
-                if (hostUser?._id) resolvedHostId = String(hostUser._id);
-            } catch (lookupError) {
-                console.warn('[HOST ID] Listing creation lookup failed:', lookupError.message);
-            }
-        }
-
         const formattedData = {
             ...req.body,
             host: {
-                name:
-                    req.body.owner ||
-                    req.body.host?.name ||
-                    'Unknown Host',
+    name:
+        req.body.owner ||
+        req.body.host?.name ||
+        'Unknown Host',
 
-                phone:
-                    req.body.phone ||
-                    req.body.host?.phone ||
-                    '',
+    phone:
+        req.body.phone ||
+        req.body.host?.phone ||
+        '',
 
-                email:
-                    hostEmail,
+    email:
+        req.body.email ||
+        req.body.host?.email ||
+        '',
 
-                avatar:
-                    req.body.avatar ||
-                    req.body.host?.avatar ||
-                    '',
-
-                ...(resolvedHostId ? { hostId: resolvedHostId } : {})
-            },
+    avatar:
+        req.body.avatar ||
+        req.body.host?.avatar ||
+        ''
+},
             status: req.body.status ? req.body.status.toLowerCase() : 'pending'
         }; //[cite: 7]
 
