@@ -451,16 +451,11 @@ function agreementHostEmail(user) {
 async function getOrCreateHostAgreement(user) {
     if (!user?.userId || !mongoose.Types.ObjectId.isValid(String(user.userId))) return null;
     let agreement = await HostAgreement.findOne({ userId: user.userId });
-    if (!agreement) {
-        agreement = await HostAgreement.create({
-            userId: user.userId,
-            hostName: String(user.name || '').trim(),
-            hostEmail: agreementHostEmail(user),
-            version: HOST_AGREEMENT_VERSION,
-            status: 'pending',
-            acceptanceMethod: 'i_agree_accept'
-        });
-    } else if (agreement.status !== 'accepted') {
+    // IMPORTANT: merely opening the dashboard or switching to Host mode must
+    // NOT create a Host Partnership Agreement record. A record is created only
+    // after the user explicitly chooses to start host onboarding.
+    if (!agreement) return null;
+    if (agreement.status !== 'accepted') {
         const updates = {};
         if (!agreement.hostName && user.name) updates.hostName = String(user.name).trim();
         if (!agreement.hostEmail && user.email) updates.hostEmail = agreementHostEmail(user);
@@ -525,11 +520,9 @@ async function buildSettlementSnapshot(booking, persist = true) {
     else if (settlementStatus !== 'disputed') settlementStatus = 'pending';
     const snapshot = { commissionRate: rate, commissionBase, commissionAmount, commissionTaxRate: taxRate, commissionTaxAmount: taxAmount, commissionTotal, settlementStatus, paymentMethod: 'direct_to_host' };
     if (persist && commissionBase > 0 && (booking.commissionRate == null || Number(booking.commissionBase || 0) !== commissionBase || Number(booking.commissionAmount || 0) !== commissionAmount || Number(booking.commissionTaxRate || 0) !== taxRate || Number(booking.commissionTaxAmount || 0) !== taxAmount || Number(booking.commissionTotal || 0) !== commissionTotal || String(booking.settlementStatus || '').toLowerCase() !== settlementStatus)) {
-        // Do not call booking.save() here. Older Booking documents may not
-        // contain fields that are required by the current Booking schema.
-        // Updating only the settlement snapshot avoids re-validating legacy
-        // booking fields while preserving the settlement record.
         Object.assign(booking, snapshot);
+        // Do not re-run full Booking validation for legacy bookings that
+        // predate required property/date fields. Only update settlement fields.
         await Booking.updateOne(
             { _id: booking._id },
             { $set: snapshot },
@@ -708,6 +701,42 @@ app.post('/api/auth/reset-password', async (req, res) => {
 }); //[cite: 7]
 
 // 3.9 Host Partnership Agreement
+// Explicit host-intent endpoint. This is the only endpoint that creates a
+// pending agreement record before acceptance.
+app.post('/api/host-agreement/initiate', authenticateToken, async (req, res) => {
+    try {
+        if (!req.user?.userId || !mongoose.Types.ObjectId.isValid(String(req.user.userId))) {
+            return res.status(400).json({ success: false, message: 'Unable to identify the account.' });
+        }
+
+        let agreement = await HostAgreement.findOne({ userId: req.user.userId });
+        if (!agreement) {
+            agreement = await HostAgreement.create({
+                userId: req.user.userId,
+                hostName: String(req.user?.name || '').trim(),
+                hostEmail: agreementHostEmail(req.user),
+                version: HOST_AGREEMENT_VERSION,
+                status: 'pending',
+                hostIntent: true,
+                acceptanceMethod: 'i_agree_accept'
+            });
+        } else {
+            const updates = {
+                hostIntent: true,
+                hostName: String(req.user?.name || agreement.hostName || '').trim(),
+                hostEmail: agreementHostEmail(req.user) || agreement.hostEmail
+            };
+            await HostAgreement.updateOne({ _id: agreement._id }, { $set: updates }, { runValidators: false });
+            Object.assign(agreement, updates);
+        }
+
+        return res.json({ success: true, message: 'Host onboarding started.', data: agreement });
+    } catch (error) {
+        console.error('[HOST AGREEMENT] Initiation error:', error);
+        return res.status(500).json({ success: false, message: 'Unable to start host onboarding.' });
+    }
+});
+
 app.get('/api/host-agreement', authenticateToken, async (req, res) => {
     try {
         const agreement = await getOrCreateHostAgreement(req.user);
@@ -736,8 +765,20 @@ app.get('/api/host-agreement', authenticateToken, async (req, res) => {
 
 app.post('/api/host-agreement/accept', authenticateToken, async (req, res) => {
     try {
-        const agreement = await getOrCreateHostAgreement(req.user);
-        if (!agreement) return res.status(400).json({ success: false, message: 'Unable to identify the host account.' });
+        let agreement = await getOrCreateHostAgreement(req.user);
+        if (!agreement) {
+            agreement = await HostAgreement.create({
+                userId: req.user.userId,
+                hostName: String(req.user?.name || '').trim(),
+                hostEmail: agreementHostEmail(req.user),
+                version: HOST_AGREEMENT_VERSION,
+                status: 'pending',
+                hostIntent: true,
+                acceptanceMethod: 'i_agree_accept'
+            });
+        } else if (!agreement.hostIntent) {
+            agreement.hostIntent = true;
+        }
 
         if (agreement.status === 'accepted') {
             return res.json({ success: true, message: 'Host Partnership Agreement is already accepted.', data: agreement });
@@ -778,7 +819,10 @@ app.post('/api/host-agreement/accept', authenticateToken, async (req, res) => {
 app.get('/api/admin/host-agreements', authenticateToken, authorizeAdmin, async (req, res) => {
     try {
         const status = String(req.query.status || 'all').trim().toLowerCase();
-        const query = status !== 'all' ? { status } : {};
+        const intentScope = { $or: [{ status: 'accepted' }, { hostIntent: true }] };
+        const query = status === 'all'
+            ? intentScope
+            : { $and: [intentScope, { status }] };
         const agreements = await HostAgreement.find(query).sort({ acceptedAt: -1, updatedAt: -1 }).lean();
         const accepted = agreements.filter((a) => a.status === 'accepted');
         const foundingAccepted = accepted.filter((a) => Number(a.commissionRate) === FOUNDING_HOST_COMMISSION_RATE).length;
@@ -1077,26 +1121,7 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
                 paymentStatus: 'unpaid'
             });
         }
-        // Use a targeted update so legacy bookings missing newer required
-        // fields can still be confirmed without full-document validation.
-        await Booking.updateOne(
-            { _id: booking._id },
-            {
-                $set: {
-                    status: booking.status,
-                    commissionRate: booking.commissionRate,
-                    commissionBase: booking.commissionBase,
-                    commissionAmount: booking.commissionAmount,
-                    commissionTaxRate: booking.commissionTaxRate,
-                    commissionTaxAmount: booking.commissionTaxAmount,
-                    commissionTotal: booking.commissionTotal,
-                    settlementStatus: booking.settlementStatus,
-                    paymentMethod: booking.paymentMethod,
-                    paymentStatus: booking.paymentStatus
-                }
-            },
-            { runValidators: false }
-        );
+        await booking.save();
 
         if (resend && booking.email) {
             const approved = newStatus === 'Confirmed';
@@ -1152,20 +1177,7 @@ app.patch('/api/admin/settlements/:id/payment', authenticateToken, authorizeAdmi
         booking.settlementTransactionReference = String(req.body.transactionReference || '').trim();
         booking.settlementNotes = String(req.body.notes || '').trim();
         booking.settlementStatus = newPaid >= s.commissionTotal ? 'paid' : 'partially_paid';
-        await Booking.updateOne(
-            { _id: booking._id },
-            {
-                $set: {
-                    settlementPaidAmount: newPaid,
-                    settlementPaymentDate: booking.settlementPaymentDate,
-                    settlementPaymentMethod: booking.settlementPaymentMethod,
-                    settlementTransactionReference: booking.settlementTransactionReference,
-                    settlementNotes: booking.settlementNotes,
-                    settlementStatus: booking.settlementStatus
-                }
-            },
-            { runValidators: false }
-        );
+        await booking.save();
         return res.json({success:true,message:booking.settlementStatus==='paid'?'Settlement marked as paid.':'Partial settlement recorded.',data:booking});
     } catch (error) { console.error('[ADMIN SETTLEMENTS] Payment update error:', error); return res.status(500).json({success:false,message:'Unable to record settlement payment.'}); }
 });

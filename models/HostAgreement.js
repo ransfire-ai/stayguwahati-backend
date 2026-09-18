@@ -6,6 +6,8 @@ const hostAgreementSchema = new mongoose.Schema({
     hostEmail: { type: String, default: '', lowercase: true, index: true },
     version: { type: String, required: true, default: 'SG-2026-01' },
     status: { type: String, enum: ['pending', 'accepted'], default: 'pending', index: true },
+    // True only after the user explicitly starts host onboarding.
+    hostIntent: { type: Boolean, default: false, index: true },
     commissionRate: { type: Number, default: null },
     acceptanceMethod: { type: String, default: 'i_agree_accept' },
     acceptedAt: { type: Date, default: null },
