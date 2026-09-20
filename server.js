@@ -27,6 +27,9 @@ const Message = require('./models/message'); //[cite: 7]
 const Review = require('./models/Review'); //[cite: 7]
 const HostAgreement = require('./models/HostAgreement');
 
+// Google Places proxy for the seven approved neighbourhood SEO pages.
+const nearbyFoodRouter = require('./nearbyFoodRoute');
+
 const app = express(); //[cite: 7]
 
 // CORS Configuration[cite: 7]
@@ -53,12 +56,16 @@ app.use(cors({
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-StayGuwahati-Places-Secret']
 })); //[cite: 7]
 
 // --- INCREASED PAYLOAD LIMITS (100MB) ---
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
+
+// Google Places proxy route. The router itself validates the secret,
+// restricts requests to the seven approved neighbourhoods, and rate-limits by IP.
+app.use('/api/places', nearbyFoodRouter);
 
 // Ensure uploads folder exists dynamically[cite: 7]
 const uploadDir = path.join(__dirname, 'uploads'); //[cite: 7]
@@ -316,11 +323,6 @@ function initScheduledJobs() {
 }
 
 // --- AUTHENTICATION MIDDLEWARE ---[cite: 7]
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET || JWT_SECRET.length < 32) {
-    throw new Error('JWT_SECRET environment variable must be configured with at least 32 characters.');
-}
-
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization']; //[cite: 7]
     const token = authHeader && authHeader.split(' ')[1]; //[cite: 7]
