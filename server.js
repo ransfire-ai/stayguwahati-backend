@@ -316,6 +316,11 @@ function initScheduledJobs() {
 }
 
 // --- AUTHENTICATION MIDDLEWARE ---[cite: 7]
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+    throw new Error('JWT_SECRET environment variable must be configured with at least 32 characters.');
+}
+
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization']; //[cite: 7]
     const token = authHeader && authHeader.split(' ')[1]; //[cite: 7]
