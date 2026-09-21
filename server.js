@@ -60,7 +60,7 @@ app.use(cors({
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Pragma', 'X-Requested-With']
 })); //[cite: 7]
 
 // --- INCREASED PAYLOAD LIMITS (100MB) ---
@@ -1999,12 +1999,23 @@ const privateStatusPropertyHandler = (req, res) => {
     return authenticateToken(req, res, () => getHomestaysHandler(req, res));
 };
 
-// Dedicated admin moderation feed. This avoids exposing pending/rejected listings
-// through the general property endpoint and guarantees the caller is an admin.
-app.get('/api/admin/homestays', authenticateToken, authorizeAdmin, getHomestaysHandler);
-
 app.get('/api/homestays', privateStatusPropertyHandler);
 app.get('/api/properties', privateStatusPropertyHandler);
+
+// Admin-only property moderation feed. Keep the public /api/homestays route
+// unchanged while giving the admin dashboard an authenticated endpoint that
+// can read pending, approved and rejected properties from the same database.
+app.get('/api/admin/homestays', authenticateToken, authorizeAdmin, async (req, res) => {
+    try {
+        return await getHomestaysHandler(req, res);
+    } catch (error) {
+        console.error('Admin homestays feed error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Unable to load admin property pipeline.'
+        });
+    }
+});
 
 app.get('/api/homestays/:id', getSingleHomestayHandler);
 app.get('/api/properties/:id', getSingleHomestayHandler);
