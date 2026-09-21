@@ -2002,12 +2002,47 @@ const privateStatusPropertyHandler = (req, res) => {
 app.get('/api/homestays', privateStatusPropertyHandler);
 app.get('/api/properties', privateStatusPropertyHandler);
 
-// Admin-only property moderation feed. Keep the public /api/homestays route
-// unchanged while giving the admin dashboard an authenticated endpoint that
-// can read pending, approved and rejected properties from the same database.
-app.get('/api/admin/homestays', authenticateToken, authorizeAdmin, async (req, res) => {
+// Admin-only property moderation feed. IMPORTANT: do not reuse the public/private
+// getHomestaysHandler here because that handler intentionally restricts pending
+// and rejected records to the property's owner. An admin must be able to see
+// every property's moderation status.
+const getAdminHomestaysHandler = async (req, res) => {
     try {
-        return await getHomestaysHandler(req, res);
+        const { locality, maxPrice, feature, status } = req.query;
+        const requestedStatus = status ? String(status).trim().toLowerCase() : 'all';
+        const queryFilter = {};
+
+        if (requestedStatus !== 'all') {
+            if (!['pending', 'approved', 'rejected'].includes(requestedStatus)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid property status.'
+                });
+            }
+            queryFilter.status = requestedStatus;
+        }
+
+        if (locality) queryFilter.locality = locality;
+        if (maxPrice) queryFilter.pricePerNight = { $lte: Number(maxPrice) };
+        if (feature) queryFilter.features = { $in: [feature] };
+
+        const listings = await Homestay.find(queryFilter).sort({ createdAt: -1 }).lean();
+        const optimizedListings = listings.map(listing => ({
+            ...listing,
+            images: optimizePropertyImages(listing.images, 800),
+            photos: optimizePropertyImages(listing.photos, 800),
+            imageUrl: optimizeImageUrl(listing.imageUrl, 800),
+            image: optimizeImageUrl(listing.image, 800),
+            host: listing.host
+                ? { ...listing.host, avatar: optimizeImageUrl(listing.host.avatar, 400) }
+                : listing.host
+        }));
+
+        return res.status(200).json({
+            success: true,
+            count: optimizedListings.length,
+            data: optimizedListings
+        });
     } catch (error) {
         console.error('Admin homestays feed error:', error);
         return res.status(500).json({
@@ -2015,7 +2050,9 @@ app.get('/api/admin/homestays', authenticateToken, authorizeAdmin, async (req, r
             message: 'Unable to load admin property pipeline.'
         });
     }
-});
+};
+
+app.get('/api/admin/homestays', authenticateToken, authorizeAdmin, getAdminHomestaysHandler);
 
 app.get('/api/homestays/:id', getSingleHomestayHandler);
 app.get('/api/properties/:id', getSingleHomestayHandler);
