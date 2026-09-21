@@ -74,6 +74,21 @@ const homestaySchema = new mongoose.Schema(
             max: [20, 'Maximum 20 bedrooms allowed']
         },
 
+        // Individual room/unit categories with independent inventory and pricing.
+        roomTypes: {
+            type: [
+                {
+                    name: { type: String, required: true, trim: true },
+                    units: { type: Number, required: true, min: 1, max: 100 },
+                    maxGuests: { type: Number, required: true, min: 1, max: 20 },
+                    pricePerNight: { type: Number, required: true, min: 1 },
+                    kitchen: { type: String, enum: ['none', 'shared', 'private'], default: 'none' },
+                    description: { type: String, trim: true, default: '' }
+                }
+            ],
+            default: []
+        },
+
         // Bathroom breakdown used by the listing form.
         bathrooms: {
             privateAttached: {

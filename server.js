@@ -27,10 +27,14 @@ const Message = require('./models/message'); //[cite: 7]
 const Review = require('./models/Review'); //[cite: 7]
 const HostAgreement = require('./models/HostAgreement');
 
-// Google Places proxy for the seven approved neighbourhood SEO pages.
-const nearbyFoodRouter = require('./nearbyFoodRoute');
-
 const app = express(); //[cite: 7]
+
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+    console.error('❌ JWT_SECRET must be set in the server environment and be at least 32 characters long.');
+    process.exit(1);
+}
 
 // CORS Configuration[cite: 7]
 const allowedOrigins = [
@@ -56,16 +60,12 @@ app.use(cors({
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-StayGuwahati-Places-Secret']
+    allowedHeaders: ['Content-Type', 'Authorization']
 })); //[cite: 7]
 
 // --- INCREASED PAYLOAD LIMITS (100MB) ---
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
-
-// Google Places proxy route. The router itself validates the secret,
-// restricts requests to the seven approved neighbourhoods, and rate-limits by IP.
-app.use('/api/places', nearbyFoodRouter);
 
 // Ensure uploads folder exists dynamically[cite: 7]
 const uploadDir = path.join(__dirname, 'uploads'); //[cite: 7]
@@ -331,7 +331,7 @@ const authenticateToken = (req, res, next) => {
         return res.status(401).json({ success: false, message: 'Access denied. Token missing.' }); //[cite: 7]
     }
 
-    const jwtSecret = process.env.JWT_SECRET || 'stayguwahati_jwt_super_secret_key_2026'; //[cite: 7]
+    const jwtSecret = JWT_SECRET; //[cite: 7]
 
     jwt.verify(token, jwtSecret, (err, user) => {
         if (err) {
@@ -592,7 +592,7 @@ app.post('/api/auth/login', async (req, res) => {
         const isMatch = await bcrypt.compare(password, user.passwordHash); //[cite: 7]
         if (!isMatch) return res.status(400).json({ success: false, message: "Invalid credentials." }); //[cite: 7]
 
-        const jwtSecret = process.env.JWT_SECRET || 'stayguwahati_jwt_super_secret_key_2026'; //[cite: 7]
+        const jwtSecret = JWT_SECRET; //[cite: 7]
 
         const token = jwt.sign(
             { userId: user._id, email: user.email, role: user.role },
@@ -852,84 +852,118 @@ app.get('/api/admin/host-agreements', authenticateToken, authorizeAdmin, async (
 });
 
 // 4. Booking Routes[cite: 7]
-app.get('/api/bookings', async (req, res) => {
+app.get('/api/bookings', authenticateToken, async (req, res) => {
     try {
-        const { email } = req.query; //[cite: 7]
-        let query = {}; //[cite: 7]
+        const actorEmail = String(req.user?.email || '').trim().toLowerCase();
 
-        if (email) {
-            query = {
-                $or: [
-                    { email: email.toLowerCase() },
-                    { hostEmail: email.toLowerCase() }
-                ]
-            }; //[cite: 7]
+        if (!actorEmail) {
+            return res.status(403).json({
+                success: false,
+                message: 'Authenticated user email is missing.'
+            });
         }
 
-        const bookings = await Booking.find(query).populate('homestayId'); //[cite: 7]
-        res.json({ success: true, data: bookings }); //[cite: 7]
+        // Never trust ?email= from the browser for private booking data.
+        // The JWT identity is the only source of truth.
+        const query = {
+            $or: [
+                { email: actorEmail },
+                { hostEmail: actorEmail }
+            ]
+        };
+
+        const bookings = await Booking.find(query).populate('homestayId');
+        res.json({ success: true, data: bookings });
     } catch (err) {
-        console.error("Fetch bookings error:", err); //[cite: 7]
-        res.status(500).json({ success: false, message: "Error loading bookings" }); //[cite: 7]
+        console.error("Fetch bookings error:", err);
+        res.status(500).json({ success: false, message: "Error loading bookings" });
     }
-}); //[cite: 7]
+});
 
 // Check whether a property's requested dates overlap an existing active booking.
 app.get('/api/bookings/availability', async (req, res) => {
     try {
-        const { propertyId, checkIn, checkOut } = req.query;
-
-        if (!propertyId || !mongoose.Types.ObjectId.isValid(propertyId)) {
-            return res.status(400).json({
-                success: false,
-                message: 'A valid property ID is required.'
-            });
-        }
+        const { propertyId, roomTypeId, checkIn, checkOut } = req.query;
+        if (!propertyId || !mongoose.Types.ObjectId.isValid(propertyId)) return res.status(400).json({ success: false, message: 'A valid property ID is required.' });
 
         const parsedCheckIn = new Date(String(checkIn || ''));
         const parsedCheckOut = new Date(String(checkOut || ''));
+        if (isNaN(parsedCheckIn.getTime()) || isNaN(parsedCheckOut.getTime()) || parsedCheckOut <= parsedCheckIn) {
+            return res.status(400).json({ success: false, message: 'Please select valid check-in and check-out dates.' });
+        }
 
-        if (
-            isNaN(parsedCheckIn.getTime()) ||
-            isNaN(parsedCheckOut.getTime()) ||
-            parsedCheckOut <= parsedCheckIn
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: 'Please select valid check-in and check-out dates.'
-            });
+        const property = await Homestay.findById(propertyId).select('roomTypes isAvailable status');
+        if (!property) return res.status(404).json({ success: false, message: 'Property not found.' });
+        if (property.status && property.status !== 'approved') return res.status(400).json({ success: false, message: 'This property is not currently available for booking.' });
+        if (property.isAvailable === false) return res.status(400).json({ success: false, message: 'This property is currently unavailable.' });
+
+        const hasRoomInventory = Array.isArray(property.roomTypes) && property.roomTypes.length > 0;
+        if (hasRoomInventory) {
+            if (!roomTypeId || !mongoose.Types.ObjectId.isValid(String(roomTypeId))) return res.status(400).json({ success: false, message: 'A valid room type is required.' });
+            const room = property.roomTypes.id(String(roomTypeId));
+            if (!room) return res.status(404).json({ success: false, message: 'Room type not found.' });
+
+            const bookings = await Booking.find({
+                homestayId: propertyId,
+                status: { $in: ['Requested', 'Confirmed'] },
+                checkInDate: { $lt: parsedCheckOut },
+                checkOutDate: { $gt: parsedCheckIn },
+                $or: [{ roomTypeId: room._id }, { roomTypeId: { $exists: false } }, { roomTypeId: null }]
+            }).select('roomTypeId roomTypeUnits checkInDate checkOutDate status');
+
+            if (bookings.some((b) => !b.roomTypeId)) {
+                return res.json({ success: true, available: false, availableUnits: 0, totalUnits: Number(room.units), roomTypeId: String(room._id), roomTypeName: room.name, roomTypePrice: Number(room.pricePerNight) });
+            }
+
+            const bookedUnits = bookings.reduce((sum, b) => sum + (String(b.roomTypeId) === String(room._id) ? Math.max(1, Number(b.roomTypeUnits) || 1) : 0), 0);
+            const availableUnits = Math.max(0, Number(room.units) - bookedUnits);
+            return res.json({ success: true, available: availableUnits > 0, availableUnits, totalUnits: Number(room.units), roomTypeId: String(room._id), roomTypeName: room.name, roomTypePrice: Number(room.pricePerNight) });
         }
 
         const conflict = await Booking.findOne({
-            $or: [
-                { homestayId: propertyId },
-                { propertyId: propertyId }
-            ],
+            $or: [{ homestayId: propertyId }, { propertyId: propertyId }],
             status: { $in: ['Requested', 'Confirmed'] },
             checkInDate: { $lt: parsedCheckOut },
             checkOutDate: { $gt: parsedCheckIn }
         }).select('_id checkInDate checkOutDate status');
-
-        return res.json({
-            success: true,
-            available: !conflict
-        });
+        return res.json({ success: true, available: !conflict, availableUnits: conflict ? 0 : 1, totalUnits: 1 });
     } catch (error) {
         console.error('Availability check error:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Unable to check date availability.'
-        });
+        return res.status(500).json({ success: false, message: 'Unable to check date availability.' });
     }
 });
 
-app.get('/api/bookings/:id', async (req, res) => {
+app.get('/api/bookings/:id', authenticateToken, async (req, res) => {
     try {
-        if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ success: false, message: 'Invalid Booking ID.' });
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ success: false, message: 'Invalid Booking ID.' });
+        }
+
         const booking = await Booking.findById(req.params.id).populate('homestayId');
-        if (!booking) return res.status(404).json({ success: false, message: 'Booking not found.' });
+        if (!booking) {
+            return res.status(404).json({ success: false, message: 'Booking not found.' });
+        }
+
+        const actorEmail = String(req.user?.email || '').trim().toLowerCase();
+        const guestEmail = String(booking.email || '').trim().toLowerCase();
+        const hostEmail = String(
+            booking.hostEmail ||
+            booking.ownerEmail ||
+            booking.homestayId?.ownerEmail ||
+            booking.homestayId?.host?.email ||
+            ''
+        ).trim().toLowerCase();
+
+        if (!actorEmail || (actorEmail !== guestEmail && actorEmail !== hostEmail)) {
+            return res.status(403).json({
+                success: false,
+                message: 'You are not authorized to view this booking.'
+            });
+        }
+
         return res.json({ success: true, data: booking });
     } catch (error) {
+        console.error('Fetch booking error:', error);
         return res.status(500).json({ success: false, message: 'Error loading booking.' });
     }
 });
@@ -949,7 +983,8 @@ app.post('/api/bookings', async (req, res) => {
             checkOut,
             guests,
             specialRequests,
-            userId
+            userId,
+            roomTypeId
         } = req.body;
 
         const guestEmail = String(email || guestInfo?.email || '').trim().toLowerCase();
@@ -979,6 +1014,14 @@ app.post('/api/bookings', async (req, res) => {
             return res.status(400).json({ success: false, message: 'This property is currently unavailable.' });
         }
 
+        const hasRoomInventory = Array.isArray(property.roomTypes) && property.roomTypes.length > 0;
+        let selectedRoom = null;
+        if (hasRoomInventory) {
+            if (!roomTypeId || !mongoose.Types.ObjectId.isValid(String(roomTypeId))) return res.status(400).json({ success: false, message: 'Please select a room type before booking.' });
+            selectedRoom = property.roomTypes.id(String(roomTypeId));
+            if (!selectedRoom) return res.status(400).json({ success: false, message: 'The selected room type is no longer available.' });
+        }
+
         const parsedCheckIn = new Date(checkIn);
         const parsedCheckOut = new Date(checkOut);
         if (isNaN(parsedCheckIn.getTime()) || isNaN(parsedCheckOut.getTime()) || parsedCheckOut <= parsedCheckIn) {
@@ -993,18 +1036,29 @@ app.post('/api/bookings', async (req, res) => {
 
         const nights = Math.ceil((parsedCheckOut - parsedCheckIn) / (1000 * 60 * 60 * 24));
         const guestCount = Math.max(1, Number(guests) || 1);
-        const nightlyRate = Number(property.pricePerNight || 0);
+        if (selectedRoom && guestCount > Number(selectedRoom.maxGuests)) {
+            return res.status(400).json({ success: false, message: `This room type allows up to ${Number(selectedRoom.maxGuests)} guest${Number(selectedRoom.maxGuests) === 1 ? '' : 's'}.` });
+        }
+
+        const nightlyRate = selectedRoom ? Number(selectedRoom.pricePerNight) : Number(property.pricePerNight || 0);
+        if (!Number.isFinite(nightlyRate) || nightlyRate <= 0) return res.status(400).json({ success: false, message: 'This property does not have a valid nightly price.' });
         const serverTotal = nightlyRate * nights;
 
-        // Do not allow overlapping requested/confirmed bookings.
-        const conflict = await Booking.findOne({
-            homestayId: property._id,
-            status: { $in: ['Requested', 'Confirmed'] },
-            checkInDate: { $lt: parsedCheckOut },
-            checkOutDate: { $gt: parsedCheckIn }
-        });
-        if (conflict) {
-            return res.status(409).json({ success: false, message: 'These dates are already requested or booked. Please choose different dates.' });
+        if (selectedRoom) {
+            const overlapping = await Booking.find({
+                homestayId: property._id,
+                status: { $in: ['Requested', 'Confirmed'] },
+                checkInDate: { $lt: parsedCheckOut },
+                checkOutDate: { $gt: parsedCheckIn },
+                $or: [{ roomTypeId: selectedRoom._id }, { roomTypeId: { $exists: false } }, { roomTypeId: null }]
+            }).select('roomTypeId roomTypeUnits');
+
+            if (overlapping.some((b) => !b.roomTypeId)) return res.status(409).json({ success: false, message: 'These dates are currently unavailable for this property. Please choose different dates.' });
+            const bookedUnits = overlapping.reduce((sum, b) => sum + (String(b.roomTypeId) === String(selectedRoom._id) ? Math.max(1, Number(b.roomTypeUnits) || 1) : 0), 0);
+            if (bookedUnits >= Number(selectedRoom.units)) return res.status(409).json({ success: false, message: 'All units of this room type are currently requested or booked for these dates.' });
+        } else {
+            const conflict = await Booking.findOne({ homestayId: property._id, status: { $in: ['Requested', 'Confirmed'] }, checkInDate: { $lt: parsedCheckOut }, checkOutDate: { $gt: parsedCheckIn } });
+            if (conflict) return res.status(409).json({ success: false, message: 'These dates are already requested or booked. Please choose different dates.' });
         }
 
         const hostEmail = String(property.ownerEmail || property.host?.email || '').trim().toLowerCase();
@@ -1032,6 +1086,10 @@ app.post('/api/bookings', async (req, res) => {
             guests: guestCount,
             totalPrice: serverTotal,
             nightlyRate,
+            roomTypeId: selectedRoom ? selectedRoom._id : null,
+            roomTypeName: selectedRoom ? selectedRoom.name : '',
+            roomTypePrice: selectedRoom ? Number(selectedRoom.pricePerNight) : nightlyRate,
+            roomTypeUnits: 1,
             specialRequests: String(specialRequests || '').trim(),
             paymentMethod: 'direct_to_host',
             commissionRate: bookingCommissionRate,
@@ -1053,7 +1111,7 @@ app.post('/api/bookings', async (req, res) => {
                 from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
                 to: guestEmail,
                 subject: `Booking request received: ${property.title}`,
-                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a"><h2>StayGuwahati</h2><p>Hi ${finalFirstName},</p><p>Your booking request has been sent to the host. It is <strong>not confirmed yet</strong>.</p><p><strong>${property.title}</strong><br>${property.locality}, Guwahati<br>${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]} · ${guestCount} guest(s)<br>₹${serverTotal.toLocaleString('en-IN')}</p><p>The host will review your request and you will be notified when it is accepted or declined.</p><a href="${bookingUrl}">View My Bookings</a></div>`
+                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a"><h2>StayGuwahati</h2><p>Hi ${finalFirstName},</p><p>Your booking request has been sent to the host. It is <strong>not confirmed yet</strong>.</p><p><strong>${property.title}</strong>${selectedRoom ? `<br>Room: ${selectedRoom.name}` : ''}<br>${property.locality}, Guwahati<br>${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]} · ${guestCount} guest(s)<br>₹${serverTotal.toLocaleString('en-IN')}</p><p>The host will review your request and you will be notified when it is accepted or declined.</p><a href="${bookingUrl}">View My Bookings</a></div>`
             }).catch(e => console.error('Guest request email error:', e.message)));
 
             if (hostEmail) {
@@ -1137,7 +1195,7 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
                 from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
                 to: booking.email,
                 subject: approved ? `Booking confirmed: ${booking.propertyName}` : `Booking request declined: ${booking.propertyName}`,
-                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a"><h2>StayGuwahati</h2><p>Hi ${booking.firstName || 'Guest'},</p><p>Your request for <strong>${booking.propertyName}</strong> has been <strong>${approved ? 'confirmed' : 'declined'}</strong>.</p><p>${booking.dates}<br>${booking.guests || 1} guest(s)<br>Total: ₹${Number(booking.totalPrice || 0).toLocaleString('en-IN')}</p>${approved ? '<p>The host will contact you regarding check-in arrangements.</p>' : '<p>Please search StayGuwahati for another available stay.</p>'}<a href="${clientUrl}/dashboard">View My Bookings</a></div>`
+                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a"><h2>StayGuwahati</h2><p>Hi ${booking.firstName || 'Guest'},</p><p>Your request for <strong>${booking.propertyName}</strong> has been <strong>${approved ? 'confirmed' : 'declined'}</strong>.</p><p>${booking.dates}${booking.roomTypeName ? `<br>Room: ${booking.roomTypeName}` : ''}<br>${booking.guests || 1} guest(s)<br>Total: ₹${Number(booking.totalPrice || 0).toLocaleString('en-IN')}</p>${approved ? '<p>The host will contact you regarding check-in arrangements.</p>' : '<p>Please search StayGuwahati for another available stay.</p>'}<a href="${clientUrl}/dashboard">View My Bookings</a></div>`
             }).catch(e => console.error('Booking status email error:', e.message));
         }
 
@@ -1547,8 +1605,9 @@ app.post('/api/reviews', async (req, res) => {
     }
 }); //[cite: 7]
 
-// 4.5 Send Message Route[cite: 7]
-app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
+// 4.5 Send Message Route
+// Dashboard messaging is authenticated and restricted to the host's own property.
+app.post(['/api/messages', '/api/messages/send'], authenticateToken, async (req, res) => {
     try {
         const { recipientPhone, message, senderName, propertyTitle, guestName, recipient, sender } = req.body; //[cite: 7]
 
@@ -1556,9 +1615,30 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
             return res.status(400).json({ success: false, error: "Missing required message field." }); //[cite: 7]
         }
 
-        const finalGuestName = guestName || recipient || 'Valued Guest'; //[cite: 7]
-        const finalPropertyTitle = propertyTitle || 'StayGuwahati Property'; //[cite: 7]
-        const finalSenderName = senderName || sender || 'User'; //[cite: 7]
+        const finalGuestName = guestName || recipient || 'Valued Guest';
+        const finalPropertyTitle = propertyTitle || 'StayGuwahati Property';
+        const finalSenderName = senderName || sender || 'User';
+
+        const actorEmail = String(req.user?.email || '').trim().toLowerCase();
+        if (!actorEmail) {
+            return res.status(403).json({ success: false, message: 'Authenticated user email is missing.' });
+        }
+
+        const ownedProperty = await Homestay.findOne({
+            title: finalPropertyTitle,
+            $or: [
+                { ownerEmail: actorEmail },
+                { hostEmail: actorEmail },
+                { 'host.email': actorEmail }
+            ]
+        }).select('_id title');
+
+        if (!ownedProperty) {
+            return res.status(403).json({
+                success: false,
+                message: 'You are not authorized to message this property.'
+            });
+        }
 
         const newMessage = new Message({
             propertyTitle: finalPropertyTitle,
@@ -1613,26 +1693,61 @@ app.post(['/api/messages', '/api/messages/send'], async (req, res) => {
     }
 }); //[cite: 7]
 
-// 4.6 Get Messages Route[cite: 7]
-app.get('/api/messages', async (req, res) => {
+// 4.6 Get Messages Route
+// Only authenticated hosts can read conversations for properties they own.
+app.get('/api/messages', authenticateToken, async (req, res) => {
     try {
-        const { propertyTitle, guestName, recipientPhone } = req.query; //[cite: 7]
-        let filter = {}; //[cite: 7]
+        const { propertyTitle, guestName, recipientPhone } = req.query;
+        const actorEmail = String(req.user?.email || '').trim().toLowerCase();
 
-        if (propertyTitle) filter.propertyTitle = propertyTitle; //[cite: 7]
-        if (guestName) filter.guestName = guestName; //[cite: 7]
-        if (recipientPhone) filter.recipientPhone = recipientPhone; //[cite: 7]
+        if (!actorEmail) {
+            return res.status(403).json({
+                success: false,
+                message: 'Authenticated user email is missing.'
+            });
+        }
 
-        const messages = await Message.find(filter).sort({ createdAt: 1 }); //[cite: 7]
+        if (!propertyTitle) {
+            return res.status(400).json({
+                success: false,
+                message: 'propertyTitle is required.'
+            });
+        }
+
+        const ownedProperty = await Homestay.findOne({
+            title: String(propertyTitle),
+            $or: [
+                { ownerEmail: actorEmail },
+                { hostEmail: actorEmail },
+                { 'host.email': actorEmail }
+            ]
+        }).select('_id title');
+
+        if (!ownedProperty) {
+            return res.status(403).json({
+                success: false,
+                message: 'You are not authorized to view this conversation.'
+            });
+        }
+
+        const filter = {
+            propertyTitle: String(propertyTitle)
+        };
+
+        if (guestName) filter.guestName = String(guestName);
+        if (recipientPhone) filter.recipientPhone = String(recipientPhone);
+
+        const messages = await Message.find(filter).sort({ createdAt: 1 });
 
         res.status(200).json({
             success: true,
             data: messages
-        }); //[cite: 7]
+        });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message }); //[cite: 7]
+        console.error('Fetch messages error:', error);
+        res.status(500).json({ success: false, error: error.message });
     }
-}); //[cite: 7]
+});
 
 // 4.7 Twilio Inbound Webhook[cite: 7]
 app.post('/api/messages/webhook', async (req, res) => {
@@ -1778,13 +1893,29 @@ const getHomestaysHandler = async (req, res) => {
         const { locality, maxPrice, feature, status } = req.query; //[cite: 7]
         let queryFilter = {}; //[cite: 7]
 
-        if (status) {
-            queryFilter.status = status.toLowerCase(); //[cite: 7]
-        } else {
-            queryFilter.status = 'approved'; //[cite: 7]
+        const requestedStatus = status ? String(status).trim().toLowerCase() : 'approved';
+        queryFilter.status = requestedStatus;
+
+        // Approved listings remain public. Pending/rejected listings are private
+        // host-dashboard data and must be restricted to the authenticated owner.
+        if (requestedStatus !== 'approved') {
+            const actorEmail = String(req.user?.email || '').trim().toLowerCase();
+
+            if (!actorEmail) {
+                return res.status(401).json({
+                    success: false,
+                    message: 'Authentication required for private property status data.'
+                });
+            }
+
+            queryFilter.$or = [
+                { ownerEmail: actorEmail },
+                { hostEmail: actorEmail },
+                { 'host.email': actorEmail }
+            ];
         }
 
-        if (locality) queryFilter.locality = locality; //[cite: 7]
+        if (locality) queryFilter.locality = locality;
         if (maxPrice) queryFilter.pricePerNight = { $lte: Number(maxPrice) }; //[cite: 7]
         if (feature) queryFilter.features = { $in: [feature] }; //[cite: 7]
 
@@ -1885,11 +2016,22 @@ const getSingleHomestayHandler = async (req, res) => {
         });
     }
 };
-app.get('/api/homestays', getHomestaysHandler); //[cite: 7]
-app.get('/api/properties', getHomestaysHandler); //[cite: 7]
+// Public approved listings stay public. Private moderation states require JWT auth.
+const privateStatusPropertyHandler = (req, res) => {
+    const requestedStatus = String(req.query.status || 'approved').trim().toLowerCase();
 
-app.get('/api/homestays/:id', getSingleHomestayHandler); //[cite: 7]
-app.get('/api/properties/:id', getSingleHomestayHandler); //[cite: 7]
+    if (requestedStatus === 'approved') {
+        return getHomestaysHandler(req, res);
+    }
+
+    return authenticateToken(req, res, () => getHomestaysHandler(req, res));
+};
+
+app.get('/api/homestays', privateStatusPropertyHandler);
+app.get('/api/properties', privateStatusPropertyHandler);
+
+app.get('/api/homestays/:id', getSingleHomestayHandler);
+app.get('/api/properties/:id', getSingleHomestayHandler);
 
 app.get('/api/homestays/:id/image', async (req, res) => {
     try {
@@ -1937,10 +2079,16 @@ app.get('/api/homestays/:id/image', async (req, res) => {
     }
 }); //[cite: 7]
 
-app.post('/api/homestays', async (req, res) => {
+app.post('/api/homestays', authenticateToken, async (req, res) => {
     try {
+        const actorEmail = String(req.user?.email || '').trim().toLowerCase();
+        if (!actorEmail) {
+            return res.status(403).json({ success: false, message: 'Authenticated user email is missing.' });
+        }
+
         const formattedData = {
             ...req.body,
+            ownerEmail: actorEmail,
             host: {
     name:
         req.body.owner ||
@@ -1952,10 +2100,7 @@ app.post('/api/homestays', async (req, res) => {
         req.body.host?.phone ||
         '',
 
-    email:
-        req.body.email ||
-        req.body.host?.email ||
-        '',
+    email: actorEmail,
 
     avatar:
         req.body.avatar ||
@@ -1975,6 +2120,7 @@ app.post('/api/homestays', async (req, res) => {
 app.put('/api/homestays/:id', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
+        const actorEmail = String(req.user?.email || '').trim().toLowerCase();
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({
@@ -1989,6 +2135,23 @@ app.put('/api/homestays/:id', authenticateToken, async (req, res) => {
             return res.status(404).json({
                 success: false,
                 message: 'Property not found.'
+            });
+        }
+
+        const propertyOwnerEmail = String(
+            property.ownerEmail ||
+            property.hostEmail ||
+            property.host?.email ||
+            ''
+        ).trim().toLowerCase();
+
+        if (
+            req.user?.role !== 'admin' &&
+            (!actorEmail || !propertyOwnerEmail || actorEmail !== propertyOwnerEmail)
+        ) {
+            return res.status(403).json({
+                success: false,
+                message: 'You are not authorized to edit this property.'
             });
         }
 
@@ -2055,16 +2218,38 @@ app.put('/api/homestays/:id', authenticateToken, async (req, res) => {
 
 app.delete('/api/homestays/:id', authenticateToken, async (req, res) => {
     try {
+        const actorEmail = String(req.user?.email || '').trim().toLowerCase();
+
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
             return res.status(400).json({ success: false, message: "Invalid Property ID format" }); //[cite: 7]
         }
 
-        const deletedProperty = await Homestay.findByIdAndDelete(req.params.id); //[cite: 7]
-        if (!deletedProperty) {
-            return res.status(404).json({ success: false, message: "Property not found." }); //[cite: 7]
+        const property = await Homestay.findById(req.params.id);
+
+        if (!property) {
+            return res.status(404).json({ success: false, message: "Property not found." });
         }
 
-        res.status(200).json({ success: true, message: "Property deleted successfully." }); //[cite: 7]
+        const propertyOwnerEmail = String(
+            property.ownerEmail ||
+            property.hostEmail ||
+            property.host?.email ||
+            ''
+        ).trim().toLowerCase();
+
+        if (
+            req.user?.role !== 'admin' &&
+            (!actorEmail || !propertyOwnerEmail || actorEmail !== propertyOwnerEmail)
+        ) {
+            return res.status(403).json({
+                success: false,
+                message: 'You are not authorized to delete this property.'
+            });
+        }
+
+        await property.deleteOne();
+
+        res.status(200).json({ success: true, message: "Property deleted successfully." });
     } catch (error) {
         res.status(500).json({ success: false, message: "Server error during deletion." }); //[cite: 7]
     }
