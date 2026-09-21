@@ -747,15 +747,12 @@ app.post('/api/host-agreement/initiate', authenticateToken, async (req, res) => 
 app.get('/api/host-agreement', authenticateToken, async (req, res) => {
     try {
         const agreement = await getOrCreateHostAgreement(req.user);
+        if (!agreement) return res.status(400).json({ success: false, message: 'Unable to identify the host account.' });
 
-        // A host account may not have started onboarding yet. This is a valid
-        // state, not a client error. Return the agreement as null so the
-        // dashboard can show the normal "Not Started" state and let the host
-        // explicitly start onboarding through /initiate.
         return res.json({
             success: true,
             data: {
-                agreement: agreement ? agreement.toObject() : null,
+                agreement: agreement.toObject(),
                 version: HOST_AGREEMENT_VERSION,
                 terms: HOST_AGREEMENT_TERMS,
                 config: {
@@ -2001,6 +1998,10 @@ const privateStatusPropertyHandler = (req, res) => {
 
     return authenticateToken(req, res, () => getHomestaysHandler(req, res));
 };
+
+// Dedicated admin moderation feed. This avoids exposing pending/rejected listings
+// through the general property endpoint and guarantees the caller is an admin.
+app.get('/api/admin/homestays', authenticateToken, authorizeAdmin, getHomestaysHandler);
 
 app.get('/api/homestays', privateStatusPropertyHandler);
 app.get('/api/properties', privateStatusPropertyHandler);
