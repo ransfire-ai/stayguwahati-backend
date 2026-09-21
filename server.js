@@ -2110,34 +2110,88 @@ app.post('/api/homestays', authenticateToken, async (req, res) => {
             return res.status(403).json({ success: false, message: 'Authenticated user email is missing.' });
         }
 
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const cleanRoomTypes = Array.isArray(body.roomTypes)
+            ? body.roomTypes.map((room) => ({
+                name: String(room?.name || '').trim(),
+                units: Number(room?.units),
+                maxGuests: Number(room?.maxGuests),
+                pricePerNight: Number(room?.pricePerNight),
+                kitchen: ['none', 'shared', 'private'].includes(String(room?.kitchen || '').toLowerCase())
+                    ? String(room.kitchen).toLowerCase()
+                    : 'none',
+                description: String(room?.description || '').trim()
+            }))
+            : [];
+
         const formattedData = {
-            ...req.body,
+            ...body,
             ownerEmail: actorEmail,
+            title: String(body.title || '').trim(),
+            description: String(body.description || '').trim(),
+            locality: String(body.locality || '').trim(),
+            pricePerNight: Number(body.pricePerNight),
+            bedrooms: Number(body.bedrooms),
+            roomTypes: cleanRoomTypes,
+            lat: Number(body.lat),
+            lng: Number(body.lng),
+            images: Array.isArray(body.images) ? body.images.filter((value) => typeof value === 'string' && value.trim()) : [],
+            features: Array.isArray(body.features) ? body.features.map((value) => String(value).trim()).filter(Boolean) : [],
+            bathrooms: {
+                privateAttached: Number(body.bathrooms?.privateAttached || 0),
+                dedicated: Number(body.bathrooms?.dedicated || 0),
+                shared: Number(body.bathrooms?.shared || 0),
+                total: Number(body.bathrooms?.total || 0)
+            },
             host: {
-    name:
-        req.body.owner ||
-        req.body.host?.name ||
-        'Unknown Host',
+                name: String(body.owner || body.host?.name || 'Unknown Host').trim(),
+                phone: String(body.phone || body.host?.phone || '').trim(),
+                email: actorEmail,
+                avatar: String(body.avatar || body.host?.avatar || '').trim()
+            },
+            status: 'pending'
+        };
 
-    phone:
-        req.body.phone ||
-        req.body.host?.phone ||
-        '',
+        // Validate the key values before Mongoose so the browser receives a useful error.
+        const problems = [];
+        if (!formattedData.title) problems.push('title is required');
+        if (!formattedData.description) problems.push('description is required');
+        if (!formattedData.locality) problems.push('locality is required');
+        if (!Number.isFinite(formattedData.pricePerNight) || formattedData.pricePerNight <= 0) problems.push('pricePerNight must be a positive number');
+        if (!Number.isInteger(formattedData.bedrooms) || formattedData.bedrooms < 1 || formattedData.bedrooms > 20) problems.push('bedrooms must be an integer from 1 to 20');
+        if (!Number.isFinite(formattedData.lat) || formattedData.lat < -90 || formattedData.lat > 90) problems.push('lat must be between -90 and 90');
+        if (!Number.isFinite(formattedData.lng) || formattedData.lng < -180 || formattedData.lng > 180) problems.push('lng must be between -180 and 180');
+        if (!formattedData.images.length) problems.push('at least one property image is required');
+        if (!formattedData.host.name) problems.push('host name is required');
+        if (!formattedData.host.phone) problems.push('host phone is required');
+        if (!formattedData.roomTypes.length) problems.push('at least one room type is required');
+        cleanRoomTypes.forEach((room, index) => {
+            if (!room.name) problems.push(`roomTypes[${index}].name is required`);
+            if (!Number.isInteger(room.units) || room.units < 1 || room.units > 100) problems.push(`roomTypes[${index}].units must be an integer from 1 to 100`);
+            if (!Number.isInteger(room.maxGuests) || room.maxGuests < 1 || room.maxGuests > 20) problems.push(`roomTypes[${index}].maxGuests must be an integer from 1 to 20`);
+            if (!Number.isFinite(room.pricePerNight) || room.pricePerNight < 1) problems.push(`roomTypes[${index}].pricePerNight must be at least 1`);
+        });
 
-    email: actorEmail,
+        if (problems.length) {
+            return res.status(400).json({
+                success: false,
+                message: 'Listing validation failed.',
+                errors: problems
+            });
+        }
 
-    avatar:
-        req.body.avatar ||
-        req.body.host?.avatar ||
-        ''
-},
-            status: req.body.status ? req.body.status.toLowerCase() : 'pending'
-        }; //[cite: 7]
-
-        const newStay = await Homestay.create(formattedData); //[cite: 7]
-        res.status(201).json({ success: true, message: 'Listing created!', data: newStay }); //[cite: 7]
+        const newStay = await Homestay.create(formattedData);
+        return res.status(201).json({ success: true, message: 'Listing created!', data: newStay });
     } catch (error) {
-        res.status(400).json({ success: false, message: 'Validation failed', error: error.message }); //[cite: 7]
+        console.error('[HOMESTAY SUBMISSION] Validation/create error:', error);
+        const validationErrors = error?.errors
+            ? Object.values(error.errors).map((item) => item?.message).filter(Boolean)
+            : [];
+        return res.status(400).json({
+            success: false,
+            message: 'Listing validation failed.',
+            errors: validationErrors.length ? validationErrors : [error?.message || 'Unable to create listing.']
+        });
     }
 }); //[cite: 7]
 

@@ -24,6 +24,7 @@ const homestaySchema = new mongoose.Schema(
                 'Bamunimaidam',
                 'Basistha',
                 'Beltola',
+                'Bhetapara',
                 'Bhangagarh',
                 'Borjhar',
                 'Chandmari',
