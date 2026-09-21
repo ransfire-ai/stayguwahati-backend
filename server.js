@@ -747,12 +747,15 @@ app.post('/api/host-agreement/initiate', authenticateToken, async (req, res) => 
 app.get('/api/host-agreement', authenticateToken, async (req, res) => {
     try {
         const agreement = await getOrCreateHostAgreement(req.user);
-        if (!agreement) return res.status(400).json({ success: false, message: 'Unable to identify the host account.' });
 
+        // A host account may not have started onboarding yet. This is a valid
+        // state, not a client error. Return the agreement as null so the
+        // dashboard can show the normal "Not Started" state and let the host
+        // explicitly start onboarding through /initiate.
         return res.json({
             success: true,
             data: {
-                agreement: agreement.toObject(),
+                agreement: agreement ? agreement.toObject() : null,
                 version: HOST_AGREEMENT_VERSION,
                 terms: HOST_AGREEMENT_TERMS,
                 config: {
@@ -883,53 +886,49 @@ app.get('/api/bookings', authenticateToken, async (req, res) => {
 // Check whether a property's requested dates overlap an existing active booking.
 app.get('/api/bookings/availability', async (req, res) => {
     try {
-        const { propertyId, roomTypeId, checkIn, checkOut } = req.query;
-        if (!propertyId || !mongoose.Types.ObjectId.isValid(propertyId)) return res.status(400).json({ success: false, message: 'A valid property ID is required.' });
+        const { propertyId, checkIn, checkOut } = req.query;
+
+        if (!propertyId || !mongoose.Types.ObjectId.isValid(propertyId)) {
+            return res.status(400).json({
+                success: false,
+                message: 'A valid property ID is required.'
+            });
+        }
 
         const parsedCheckIn = new Date(String(checkIn || ''));
         const parsedCheckOut = new Date(String(checkOut || ''));
-        if (isNaN(parsedCheckIn.getTime()) || isNaN(parsedCheckOut.getTime()) || parsedCheckOut <= parsedCheckIn) {
-            return res.status(400).json({ success: false, message: 'Please select valid check-in and check-out dates.' });
-        }
 
-        const property = await Homestay.findById(propertyId).select('roomTypes isAvailable status');
-        if (!property) return res.status(404).json({ success: false, message: 'Property not found.' });
-        if (property.status && property.status !== 'approved') return res.status(400).json({ success: false, message: 'This property is not currently available for booking.' });
-        if (property.isAvailable === false) return res.status(400).json({ success: false, message: 'This property is currently unavailable.' });
-
-        const hasRoomInventory = Array.isArray(property.roomTypes) && property.roomTypes.length > 0;
-        if (hasRoomInventory) {
-            if (!roomTypeId || !mongoose.Types.ObjectId.isValid(String(roomTypeId))) return res.status(400).json({ success: false, message: 'A valid room type is required.' });
-            const room = property.roomTypes.id(String(roomTypeId));
-            if (!room) return res.status(404).json({ success: false, message: 'Room type not found.' });
-
-            const bookings = await Booking.find({
-                homestayId: propertyId,
-                status: { $in: ['Requested', 'Confirmed'] },
-                checkInDate: { $lt: parsedCheckOut },
-                checkOutDate: { $gt: parsedCheckIn },
-                $or: [{ roomTypeId: room._id }, { roomTypeId: { $exists: false } }, { roomTypeId: null }]
-            }).select('roomTypeId roomTypeUnits checkInDate checkOutDate status');
-
-            if (bookings.some((b) => !b.roomTypeId)) {
-                return res.json({ success: true, available: false, availableUnits: 0, totalUnits: Number(room.units), roomTypeId: String(room._id), roomTypeName: room.name, roomTypePrice: Number(room.pricePerNight) });
-            }
-
-            const bookedUnits = bookings.reduce((sum, b) => sum + (String(b.roomTypeId) === String(room._id) ? Math.max(1, Number(b.roomTypeUnits) || 1) : 0), 0);
-            const availableUnits = Math.max(0, Number(room.units) - bookedUnits);
-            return res.json({ success: true, available: availableUnits > 0, availableUnits, totalUnits: Number(room.units), roomTypeId: String(room._id), roomTypeName: room.name, roomTypePrice: Number(room.pricePerNight) });
+        if (
+            isNaN(parsedCheckIn.getTime()) ||
+            isNaN(parsedCheckOut.getTime()) ||
+            parsedCheckOut <= parsedCheckIn
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please select valid check-in and check-out dates.'
+            });
         }
 
         const conflict = await Booking.findOne({
-            $or: [{ homestayId: propertyId }, { propertyId: propertyId }],
+            $or: [
+                { homestayId: propertyId },
+                { propertyId: propertyId }
+            ],
             status: { $in: ['Requested', 'Confirmed'] },
             checkInDate: { $lt: parsedCheckOut },
             checkOutDate: { $gt: parsedCheckIn }
         }).select('_id checkInDate checkOutDate status');
-        return res.json({ success: true, available: !conflict, availableUnits: conflict ? 0 : 1, totalUnits: 1 });
+
+        return res.json({
+            success: true,
+            available: !conflict
+        });
     } catch (error) {
         console.error('Availability check error:', error);
-        return res.status(500).json({ success: false, message: 'Unable to check date availability.' });
+        return res.status(500).json({
+            success: false,
+            message: 'Unable to check date availability.'
+        });
     }
 });
 
@@ -983,8 +982,7 @@ app.post('/api/bookings', async (req, res) => {
             checkOut,
             guests,
             specialRequests,
-            userId,
-            roomTypeId
+            userId
         } = req.body;
 
         const guestEmail = String(email || guestInfo?.email || '').trim().toLowerCase();
@@ -1014,14 +1012,6 @@ app.post('/api/bookings', async (req, res) => {
             return res.status(400).json({ success: false, message: 'This property is currently unavailable.' });
         }
 
-        const hasRoomInventory = Array.isArray(property.roomTypes) && property.roomTypes.length > 0;
-        let selectedRoom = null;
-        if (hasRoomInventory) {
-            if (!roomTypeId || !mongoose.Types.ObjectId.isValid(String(roomTypeId))) return res.status(400).json({ success: false, message: 'Please select a room type before booking.' });
-            selectedRoom = property.roomTypes.id(String(roomTypeId));
-            if (!selectedRoom) return res.status(400).json({ success: false, message: 'The selected room type is no longer available.' });
-        }
-
         const parsedCheckIn = new Date(checkIn);
         const parsedCheckOut = new Date(checkOut);
         if (isNaN(parsedCheckIn.getTime()) || isNaN(parsedCheckOut.getTime()) || parsedCheckOut <= parsedCheckIn) {
@@ -1036,29 +1026,18 @@ app.post('/api/bookings', async (req, res) => {
 
         const nights = Math.ceil((parsedCheckOut - parsedCheckIn) / (1000 * 60 * 60 * 24));
         const guestCount = Math.max(1, Number(guests) || 1);
-        if (selectedRoom && guestCount > Number(selectedRoom.maxGuests)) {
-            return res.status(400).json({ success: false, message: `This room type allows up to ${Number(selectedRoom.maxGuests)} guest${Number(selectedRoom.maxGuests) === 1 ? '' : 's'}.` });
-        }
-
-        const nightlyRate = selectedRoom ? Number(selectedRoom.pricePerNight) : Number(property.pricePerNight || 0);
-        if (!Number.isFinite(nightlyRate) || nightlyRate <= 0) return res.status(400).json({ success: false, message: 'This property does not have a valid nightly price.' });
+        const nightlyRate = Number(property.pricePerNight || 0);
         const serverTotal = nightlyRate * nights;
 
-        if (selectedRoom) {
-            const overlapping = await Booking.find({
-                homestayId: property._id,
-                status: { $in: ['Requested', 'Confirmed'] },
-                checkInDate: { $lt: parsedCheckOut },
-                checkOutDate: { $gt: parsedCheckIn },
-                $or: [{ roomTypeId: selectedRoom._id }, { roomTypeId: { $exists: false } }, { roomTypeId: null }]
-            }).select('roomTypeId roomTypeUnits');
-
-            if (overlapping.some((b) => !b.roomTypeId)) return res.status(409).json({ success: false, message: 'These dates are currently unavailable for this property. Please choose different dates.' });
-            const bookedUnits = overlapping.reduce((sum, b) => sum + (String(b.roomTypeId) === String(selectedRoom._id) ? Math.max(1, Number(b.roomTypeUnits) || 1) : 0), 0);
-            if (bookedUnits >= Number(selectedRoom.units)) return res.status(409).json({ success: false, message: 'All units of this room type are currently requested or booked for these dates.' });
-        } else {
-            const conflict = await Booking.findOne({ homestayId: property._id, status: { $in: ['Requested', 'Confirmed'] }, checkInDate: { $lt: parsedCheckOut }, checkOutDate: { $gt: parsedCheckIn } });
-            if (conflict) return res.status(409).json({ success: false, message: 'These dates are already requested or booked. Please choose different dates.' });
+        // Do not allow overlapping requested/confirmed bookings.
+        const conflict = await Booking.findOne({
+            homestayId: property._id,
+            status: { $in: ['Requested', 'Confirmed'] },
+            checkInDate: { $lt: parsedCheckOut },
+            checkOutDate: { $gt: parsedCheckIn }
+        });
+        if (conflict) {
+            return res.status(409).json({ success: false, message: 'These dates are already requested or booked. Please choose different dates.' });
         }
 
         const hostEmail = String(property.ownerEmail || property.host?.email || '').trim().toLowerCase();
@@ -1086,10 +1065,6 @@ app.post('/api/bookings', async (req, res) => {
             guests: guestCount,
             totalPrice: serverTotal,
             nightlyRate,
-            roomTypeId: selectedRoom ? selectedRoom._id : null,
-            roomTypeName: selectedRoom ? selectedRoom.name : '',
-            roomTypePrice: selectedRoom ? Number(selectedRoom.pricePerNight) : nightlyRate,
-            roomTypeUnits: 1,
             specialRequests: String(specialRequests || '').trim(),
             paymentMethod: 'direct_to_host',
             commissionRate: bookingCommissionRate,
@@ -1111,7 +1086,7 @@ app.post('/api/bookings', async (req, res) => {
                 from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
                 to: guestEmail,
                 subject: `Booking request received: ${property.title}`,
-                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a"><h2>StayGuwahati</h2><p>Hi ${finalFirstName},</p><p>Your booking request has been sent to the host. It is <strong>not confirmed yet</strong>.</p><p><strong>${property.title}</strong>${selectedRoom ? `<br>Room: ${selectedRoom.name}` : ''}<br>${property.locality}, Guwahati<br>${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]} · ${guestCount} guest(s)<br>₹${serverTotal.toLocaleString('en-IN')}</p><p>The host will review your request and you will be notified when it is accepted or declined.</p><a href="${bookingUrl}">View My Bookings</a></div>`
+                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a"><h2>StayGuwahati</h2><p>Hi ${finalFirstName},</p><p>Your booking request has been sent to the host. It is <strong>not confirmed yet</strong>.</p><p><strong>${property.title}</strong><br>${property.locality}, Guwahati<br>${parsedCheckIn.toISOString().split('T')[0]} to ${parsedCheckOut.toISOString().split('T')[0]} · ${guestCount} guest(s)<br>₹${serverTotal.toLocaleString('en-IN')}</p><p>The host will review your request and you will be notified when it is accepted or declined.</p><a href="${bookingUrl}">View My Bookings</a></div>`
             }).catch(e => console.error('Guest request email error:', e.message)));
 
             if (hostEmail) {
@@ -1195,7 +1170,7 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
                 from: process.env.FROM_EMAIL || 'StayGuwahati <onboarding@resend.dev>',
                 to: booking.email,
                 subject: approved ? `Booking confirmed: ${booking.propertyName}` : `Booking request declined: ${booking.propertyName}`,
-                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a"><h2>StayGuwahati</h2><p>Hi ${booking.firstName || 'Guest'},</p><p>Your request for <strong>${booking.propertyName}</strong> has been <strong>${approved ? 'confirmed' : 'declined'}</strong>.</p><p>${booking.dates}${booking.roomTypeName ? `<br>Room: ${booking.roomTypeName}` : ''}<br>${booking.guests || 1} guest(s)<br>Total: ₹${Number(booking.totalPrice || 0).toLocaleString('en-IN')}</p>${approved ? '<p>The host will contact you regarding check-in arrangements.</p>' : '<p>Please search StayGuwahati for another available stay.</p>'}<a href="${clientUrl}/dashboard">View My Bookings</a></div>`
+                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#0f172a"><h2>StayGuwahati</h2><p>Hi ${booking.firstName || 'Guest'},</p><p>Your request for <strong>${booking.propertyName}</strong> has been <strong>${approved ? 'confirmed' : 'declined'}</strong>.</p><p>${booking.dates}<br>${booking.guests || 1} guest(s)<br>Total: ₹${Number(booking.totalPrice || 0).toLocaleString('en-IN')}</p>${approved ? '<p>The host will contact you regarding check-in arrangements.</p>' : '<p>Please search StayGuwahati for another available stay.</p>'}<a href="${clientUrl}/dashboard">View My Bookings</a></div>`
             }).catch(e => console.error('Booking status email error:', e.message));
         }
 
