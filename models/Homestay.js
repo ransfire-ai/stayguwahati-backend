@@ -24,7 +24,6 @@ const homestaySchema = new mongoose.Schema(
                 'Bamunimaidam',
                 'Basistha',
                 'Beltola',
-                'Bhetapara',
                 'Bhangagarh',
                 'Borjhar',
                 'Chandmari',
@@ -160,7 +159,34 @@ const homestaySchema = new mongoose.Schema(
             }
         ],
 
+        // Stable public host identity used by the host-profile page.
+        // Stored as the authenticated User _id, never as an email address.
+        ownerId: {
+            type: mongoose.Schema.Types.ObjectId,
+            default: null,
+            index: true
+        },
+
+        ownerEmail: {
+            type: String,
+            lowercase: true,
+            trim: true,
+            default: '',
+            index: true
+        },
+
+        hostId: {
+            type: mongoose.Schema.Types.ObjectId,
+            default: null,
+            index: true
+        },
+
         host: {
+            hostId: {
+                type: mongoose.Schema.Types.ObjectId,
+                default: null,
+                index: true
+            },
             name: {
                 type: String,
                 required: true,
