@@ -26,6 +26,7 @@ const Booking = require('./models/Booking'); //[cite: 7]
 const Message = require('./models/message'); //[cite: 7]
 const Review = require('./models/Review'); //[cite: 7]
 const HostAgreement = require('./models/HostAgreement');
+const nearbyFoodRoute = require('./routes/nearbyFoodRoute');
 
 const app = express(); //[cite: 7]
 
@@ -550,6 +551,10 @@ app.get('/api/health', (req, res) => {
 });
 
 // --- API ROUTES ---[cite: 7]
+
+// Google Places proxy for the seven approved neighbourhood food pages.
+// The router keeps GOOGLE_MAPS_API_KEY server-side on Render.
+app.use('/api/places', nearbyFoodRoute);
 
 // 1. Support Ticket Route[cite: 7]
 app.post('/api/tickets', async (req, res) => {
