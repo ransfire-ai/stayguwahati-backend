@@ -752,12 +752,12 @@ app.post('/api/host-agreement/initiate', authenticateToken, async (req, res) => 
 app.get('/api/host-agreement', authenticateToken, async (req, res) => {
     try {
         const agreement = await getOrCreateHostAgreement(req.user);
-        if (!agreement) return res.status(400).json({ success: false, message: 'Unable to identify the host account.' });
 
+        // No agreement yet is a normal pre-onboarding state.
         return res.json({
             success: true,
             data: {
-                agreement: agreement.toObject(),
+                agreement: agreement ? agreement.toObject() : null,
                 version: HOST_AGREEMENT_VERSION,
                 terms: HOST_AGREEMENT_TERMS,
                 config: {
@@ -2161,6 +2161,13 @@ app.post('/api/homestays', authenticateToken, async (req, res) => {
             ? new mongoose.Types.ObjectId(String(req.user.userId))
             : null;
 
+        if (!actorUserId) {
+            return res.status(403).json({
+                success: false,
+                message: 'Unable to identify the authenticated host account. Please sign out and sign in again.'
+            });
+        }
+
         const formattedData = {
             ...req.body,
             ownerId: actorUserId,
@@ -2191,7 +2198,21 @@ app.post('/api/homestays', authenticateToken, async (req, res) => {
         const newStay = await Homestay.create(formattedData); //[cite: 7]
         res.status(201).json({ success: true, message: 'Listing created!', data: newStay }); //[cite: 7]
     } catch (error) {
-        res.status(400).json({ success: false, message: 'Validation failed', error: error.message }); //[cite: 7]
+        console.error('[HOMESTAY CREATE] Validation error:', error);
+        const fieldErrors = {};
+        if (error?.name === 'ValidationError' && error.errors) {
+            for (const [field, detail] of Object.entries(error.errors)) {
+                fieldErrors[field] = detail?.message || String(detail);
+            }
+        }
+        return res.status(400).json({
+            success: false,
+            message: error?.name === 'ValidationError'
+                ? 'Listing validation failed. Please correct the highlighted fields.'
+                : (error?.message || 'Unable to create listing.'),
+            errors: fieldErrors,
+            error: error?.message || 'Unknown error'
+        });
     }
 }); //[cite: 7]
 
